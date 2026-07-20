@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Select Organisation</title>
+<style>
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    background:
+        radial-gradient(circle at top right, rgba(19,181,234,0.08), transparent 30%),
+        radial-gradient(circle at bottom left, rgba(99,102,241,0.08), transparent 30%),
+        #f8fafc;
+}
+
+.card {
+    width: 100%;
+    max-width: 500px;
+    background: #ffffff;
+    padding: 40px;
+    border-radius: 24px;
+    border: 1px solid #e4e7ec;
+    box-shadow:
+        0 10px 30px rgba(16, 24, 40, 0.08),
+        0 2px 8px rgba(16, 24, 40, 0.04);
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 5px;
+    background: linear-gradient(
+        90deg,
+        #13B5EA,
+        #3b82f6,
+        #6366f1
+    );
+}
+
+.logo {
+    width: 84px;
+    height: 84px;
+    object-fit: contain;
+    margin-bottom: 20px;
+    border-radius: 18px;
+    padding: 10px;
+    background: #f9fafb;
+    border: 1px solid #eef2f6;
+}
+
+h1 {
+    font-size: 28px;
+    color: #101828;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.app-name {
+    background: linear-gradient(90deg, #13B5EA, #2563eb);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.sub {
+    color: #667085;
+    font-size: 15px;
+    margin-bottom: 32px;
+    line-height: 1.6;
+}
+
+.combo {
+    position: relative;
+    text-align: left;
+    margin-bottom: 28px;
+}
+
+.combo-input {
+    width: 100%;
+    padding: 16px 50px 16px 18px;
+    border: 1px solid #d0d5dd;
+    border-radius: 14px;
+    font-size: 15px;
+    background: #fff;
+    color: #101828;
+    transition: all 0.25s ease;
+}
+
+.combo-input:hover {
+    border-color: #b9c2d0;
+}
+
+.combo-input:focus {
+    outline: none;
+    border-color: #13B5EA;
+    box-shadow: 0 0 0 5px rgba(19, 181, 234, 0.12);
+}
+
+.combo-arrow {
+    position: absolute;
+    right: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #98A2B3;
+    font-size: 13px;
+    pointer-events: none;
+}
+
+.combo-list {
+    display: none;
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 0;
+    right: 0;
+    max-height: 280px;
+    overflow-y: auto;
+    background: #fff;
+    border-radius: 16px;
+    border: 1px solid #eaecf0;
+    box-shadow: 0 16px 40px rgba(16,24,40,0.12);
+    z-index: 100;
+}
+
+.combo-list.open {
+    display: block;
+}
+
+.combo-option {
+    padding: 15px 18px;
+    font-size: 14px;
+    color: #101828;
+    cursor: pointer;
+    transition: 0.2s;
+    border-bottom: 1px solid #f2f4f7;
+}
+
+.combo-option:last-child {
+    border-bottom: none;
+}
+
+.combo-option:hover,
+.combo-option.active {
+    background: #f0f9ff;
+    color: #0369a1;
+}
+
+.combo-empty {
+    padding: 16px;
+    text-align: center;
+    color: #98A2B3;
+}
+
+.section-title {
+    text-align: left;
+    font-size: 13px;
+    font-weight: 700;
+    color: #344054;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin: 28px 0 12px;
+}
+
+.info-row {
+    display: flex;
+    gap: 16px;
+    text-align: left;
+    padding: 18px;
+    border: 1px solid #eef2f6;
+    border-radius: 14px;
+    background: #fcfcfd;
+    margin-bottom: 14px;
+    transition: 0.2s;
+}
+
+.info-row:hover {
+    background: #f9fafb;
+    transform: translateY(-1px);
+}
+
+.info-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    background: #f0f9ff;
+    color: #0284c7;
+    border: 1px solid #dbeafe;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+
+.info-text b {
+    display: block;
+    color: #101828;
+    font-size: 15px;
+    margin-bottom: 4px;
+}
+
+.info-text span {
+    color: #667085;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.disclaimer {
+    margin-top: 24px;
+    padding: 16px;
+    background: #f9fafb;
+    border: 1px solid #eef2f6;
+    border-radius: 12px;
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.8;
+    text-align: left;
+}
+
+.allow-btn {
+    width: 100%;
+    margin-top: 28px;
+    padding: 16px;
+    border: none;
+    border-radius: 14px;
+    background: linear-gradient(90deg, #13B5EA, #2563eb);
+    color: white;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    box-shadow: 0 8px 20px rgba(19,181,234,0.25);
+}
+
+.allow-btn:not(:disabled):hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 28px rgba(19,181,234,0.35);
+}
+
+.allow-btn:disabled {
+    background: #d0d5dd;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.combo-input.error {
+    border-color: #d92d20;
+    box-shadow: 0 0 0 4px rgba(217,45,32,0.10);
+}
+
+.combo-error-msg {
+    display: none;
+    color: #d92d20;
+    font-size: 12.5px;
+    margin-top: 6px;
+}
+
+.combo-error-msg.show {
+    display: block;
+}
+
+.cancel-link {
+    display: inline-block;
+    margin-top: 20px;
+    color: #667085;
+    font-size: 14px;
+    text-decoration: none;
+    transition: 0.2s;
+}
+
+.cancel-link:hover {
+    color: #101828;
+    text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+    .card {
+        padding: 28px;
+    }
+
+    h1 {
+        font-size: 24px;
+    }
+
+    .info-row {
+        padding: 16px;
+    }
+}
+</style>
+</head>
+<body>
+  <div class="card">
+    <img src="/static/image.png" class="logo" alt="Xero">
+    <h1><span class="app-name">MMC Convert</span></h1>
+    <p class="sub">wants access to:</p>
+
+    <form method="post" action="/select-org" id="orgForm" novalidate>
+      <input type="hidden" name="pending" value="{{ pending }}">
+      <input type="hidden" name="tenant_id" id="tenantIdField" required>
+
+      <div class="combo">
+        <input type="text" class="combo-input" id="comboInput"
+               placeholder="Search organisation..." autocomplete="off"
+               role="combobox" aria-expanded="false" aria-autocomplete="list"
+               aria-controls="comboList">
+        <span class="combo-arrow">&#9662;</span>
+        <div class="combo-list" id="comboList" role="listbox">
+          {% for t in tenants %}
+          <div class="combo-option" role="option" data-id="{{ t.tenantId }}" data-name="{{ t.tenantName }}">{{ t.tenantName }}</div>
+          {% endfor %}
+        </div>
+        <div class="combo-error-msg" id="comboError">Please select an organisation from the list.</div>
+      </div>
+
+      <div class="section-title">Organisation data</div>
+      <div class="info-row">
+        <div class="info-icon">&#128196;</div>
+        <div class="info-text">
+          <b id="orgNameLabel">Select an organisation above</b>
+          <span>View and manage your business transactions and contacts</span>
+        </div>
+      </div>
+
+      <div class="section-title">User account information</div>
+      <div class="info-row">
+        <div class="info-icon">&#128100;</div>
+        <div class="info-text">
+          <b>Migrations MMC Convert</b>
+          <span>View your name, email, and user profile.</span>
+        </div>
+      </div>
+
+      <div class="disclaimer">
+        By allowing access, you agree to the transfer of your data between Xero and this application in accordance with Xero's Terms of use and the application provider's terms of use and privacy policy.
+      </div>
+
+      <button type="submit" class="allow-btn" id="allowBtn" disabled>Allow access</button>
+    </form>
+    <a href="/" class="cancel-link">Cancel</a>
+  </div>
+
+<script>
+  const input = document.getElementById('comboInput');
+  const list = document.getElementById('comboList');
+  const options = Array.from(document.querySelectorAll('.combo-option'));
+  const tenantIdField = document.getElementById('tenantIdField');
+  const allowBtn = document.getElementById('allowBtn');
+  const orgNameLabel = document.getElementById('orgNameLabel');
+  const comboError = document.getElementById('comboError');
+  const form = document.getElementById('orgForm');
+
+  let activeIndex = -1;
+
+  function visibleOptions() {
+    return options.filter(o => o.style.display !== 'none');
+  }
+
+  function openList() {
+    list.classList.add('open');
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeList() {
+    list.classList.remove('open');
+    input.setAttribute('aria-expanded', 'false');
+    clearActive();
+  }
+
+  function clearActive() {
+    options.forEach(o => o.classList.remove('active'));
+    activeIndex = -1;
+  }
+
+  function setActive(idx) {
+    const vis = visibleOptions();
+    if (!vis.length) return;
+    clearActive();
+    activeIndex = ((idx % vis.length) + vis.length) % vis.length;
+    vis[activeIndex].classList.add('active');
+    vis[activeIndex].scrollIntoView({ block: 'nearest' });
+  }
+
+  function selectOption(opt) {
+    input.value = opt.dataset.name;
+    tenantIdField.value = opt.dataset.id;
+    orgNameLabel.textContent = opt.dataset.name;
+    allowBtn.disabled = false;
+    clearError();
+    closeList();
+  }
+
+  function showError() {
+    input.classList.add('error');
+    comboError.classList.add('show');
+  }
+
+  function clearError() {
+    input.classList.remove('error');
+    comboError.classList.remove('show');
+  }
+
+  function filterOptions() {
+    const q = input.value.trim().toLowerCase();
+    let anyVisible = false;
+    options.forEach(opt => {
+      const match = opt.dataset.name.toLowerCase().includes(q);
+      opt.style.display = match ? 'block' : 'none';
+      if (match) anyVisible = true;
+    });
+    let empty = list.querySelector('.combo-empty');
+    if (!anyVisible) {
+      if (!empty) {
+        empty = document.createElement('div');
+        empty.className = 'combo-empty';
+        empty.textContent = 'No organisation found';
+        list.appendChild(empty);
+      }
+    } else if (empty) {
+      empty.remove();
+    }
+    clearActive();
+  }
+
+  input.addEventListener('focus', () => { openList(); filterOptions(); });
+
+  input.addEventListener('input', () => {
+    openList();
+    filterOptions();
+    tenantIdField.value = '';
+    allowBtn.disabled = true;
+    orgNameLabel.textContent = 'Select an organisation above';
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const vis = visibleOptions();
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!list.classList.contains('open')) { openList(); filterOptions(); }
+      if (vis.length) setActive(activeIndex + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!list.classList.contains('open')) { openList(); filterOptions(); }
+      if (vis.length) setActive(activeIndex - 1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (list.classList.contains('open') && activeIndex >= 0 && vis[activeIndex]) {
+        selectOption(vis[activeIndex]);
+      }
+    } else if (e.key === 'Escape') {
+      closeList();
+      input.blur();
+    }
+  });
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => selectOption(opt));
+    opt.addEventListener('mouseenter', () => {
+      const vis = visibleOptions();
+      const idx = vis.indexOf(opt);
+      if (idx !== -1) setActive(idx);
+    });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.combo')) closeList();
+  });
+
+  // Auto-select if there's exactly one organisation available
+  if (options.length === 1) {
+    selectOption(options[0]);
+  }
+
+  // Guard against submitting without a valid, selected tenant
+  form.addEventListener('submit', (e) => {
+    const valid = options.some(o => o.dataset.id === tenantIdField.value);
+    if (!tenantIdField.value || !valid) {
+      e.preventDefault();
+      showError();
+      openList();
+      filterOptions();
+      input.focus();
+    }
+  });
+</script>
+</body>
+</html>
