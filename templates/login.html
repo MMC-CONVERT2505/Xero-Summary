@@ -194,12 +194,12 @@
 <body>
   <div class="card">
     <div class="logo-wrap">
-      <img src="/static/image.png" alt="Xero">
+      <img src="{{ base_path }}/static/image.png" alt="Xero">
     </div>
     <h1>Conversion Summary</h1>
     <p class="sub">Sign in with your Xero account to view your data migration summary.</p>
 
-    <a href="/login" class="xero-btn" id="loginBtn">
+    <a href="{{ base_path }}/login" class="xero-btn" id="loginBtn">
       <svg class="xero-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <circle cx="12" cy="12" r="12" fill="white"/>
         <path d="M12 12l-4-4M12 12l4-4M12 12l-4 4M12 12l4 4" stroke="#13B5EA" stroke-width="1.6" stroke-linecap="round"/>
@@ -210,7 +210,7 @@
 
     <div class="divider">or</div>
 
-    <a href="/login?switch_account=true" class="switch-account" id="switchAccountLink">
+    <a href="{{ base_path }}/login?switch_account=true" class="switch-account" id="switchAccountLink">
       Use a different account
     </a>
 

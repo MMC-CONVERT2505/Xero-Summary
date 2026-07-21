@@ -51,9 +51,19 @@ API_BASE = "https://api.xero.com/api.xro/2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "xero_tokens.db")
 
+# Path prefix this app is served under, e.g. "/xero-summary" when running
+# behind nginx alongside other tools on the same domain. Empty string means
+# it's served at the domain root (local dev / its own subdomain).
+BASE_PATH = os.getenv("APP_BASE_PATH", "").rstrip("/")
+
+# Temporary in-memory holder for token_data while user picks an org on
+# /select-org. Keyed by a random "pending" id, cleared once consumed.
+_pending_selections: dict = {}
+
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+templates.env.globals["base_path"] = BASE_PATH
 
 
 # --------------------------------------------------------------------
@@ -235,27 +245,53 @@ async def callback(request: Request):
     if not tenants:
         raise HTTPException(400, "No Xero organisation connected")
 
-    tenant_id = tenants[0]["tenantId"]
-    tenant_name = tenants[0]["tenantName"]
+    if len(tenants) == 1:
+        tenant_id = tenants[0]["tenantId"]
+        tenant_name = tenants[0]["tenantName"]
+        save_token(
+            tenant_id=tenant_id,
+            tenant_name=tenant_name,
+            access_token=token_data["access_token"],
+            refresh_token=token_data["refresh_token"],
+            expires_in=token_data["expires_in"],
+        )
+        return RedirectResponse(url=f"{BASE_PATH}/name-entry?tenant_id={tenant_id}")
 
+    pending_id = secrets.token_urlsafe(16)
+    _pending_selections[pending_id] = {"token_data": token_data, "tenants": tenants}
+    return templates.TemplateResponse(
+        request, "select_org.html", {"pending": pending_id, "tenants": tenants}
+    )
+
+
+@app.post("/select-org")
+async def select_org(pending: str = Form(...), tenant_id: str = Form(...)):
+    entry = _pending_selections.pop(pending, None)
+    if not entry:
+        raise HTTPException(400, "Selection expired, go to / and login again")
+    token_data = entry["token_data"]
+    tenants = entry["tenants"]
+    chosen = next((t for t in tenants if t["tenantId"] == tenant_id), None)
+    if not chosen:
+        raise HTTPException(400, "Invalid organisation selected")
     save_token(
-        tenant_id=tenant_id,
-        tenant_name=tenant_name,
+        tenant_id=chosen["tenantId"],
+        tenant_name=chosen["tenantName"],
         access_token=token_data["access_token"],
         refresh_token=token_data["refresh_token"],
         expires_in=token_data["expires_in"],
     )
-
-    return RedirectResponse(url=f"/name-entry?tenant_id={tenant_id}")
+    tid = chosen["tenantId"]
+    return RedirectResponse(url=f"{BASE_PATH}/name-entry?tenant_id={tid}", status_code=303)
 
 
 @app.get("/name-entry", response_class=HTMLResponse)
 async def name_entry(request: Request, tenant_id: str = None):
     if not tenant_id:
-        return RedirectResponse(url="/")
+        return RedirectResponse(url=f"{BASE_PATH}/")
     row = get_token_row(tenant_id)
     if not row:
-        return RedirectResponse(url="/")
+        return RedirectResponse(url=f"{BASE_PATH}/")
     return templates.TemplateResponse(
         request,
         "name_entry.html",
@@ -269,7 +305,7 @@ async def name_entry_submit(tenant_id: str = Form(...), display_name: str = Form
     if not row:
         raise HTTPException(400, "Invalid tenant")
     update_display_name(tenant_id, display_name.strip())
-    return RedirectResponse(url=f"/dashboard?tenant_id={tenant_id}", status_code=303)
+    return RedirectResponse(url=f"{BASE_PATH}/dashboard?tenant_id={tenant_id}", status_code=303)
 
 
 async def get_valid_access_token(tenant_id: str) -> str:
@@ -305,12 +341,12 @@ async def get_valid_access_token(tenant_id: str) -> str:
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, tenant_id: str = None):
     if not tenant_id:
-        return RedirectResponse(url="/")
+        return RedirectResponse(url=f"{BASE_PATH}/")
     row = get_token_row(tenant_id)
     if not row:
-        return RedirectResponse(url="/")
+        return RedirectResponse(url=f"{BASE_PATH}/")
     if not row.get("display_name"):
-        return RedirectResponse(url=f"/name-entry?tenant_id={tenant_id}")
+        return RedirectResponse(url=f"{BASE_PATH}/name-entry?tenant_id={tenant_id}")
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -355,7 +391,7 @@ async def logout(tenant_id: str = Form(...)):
         print(f"[LOGOUT] Error while revoking Xero connection: {e}")
 
     delete_token_row(tenant_id)
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url=f"{BASE_PATH}/", status_code=303)
 
 
 @app.get("/api/org-info")

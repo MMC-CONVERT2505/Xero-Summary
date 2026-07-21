@@ -64,13 +64,13 @@
 </head>
 <body>
   <div class="card">
-    <img src="/static/image.png" class="logo" alt="Xero">
+    <img src="{{ base_path }}/static/image.png" class="logo" alt="Xero">
     <h1>Name this connection</h1>
     <p>This name will be shown as the "Company" on your summary dashboard.</p>
 
  
 
-    <form method="post" action="/name-entry">
+    <form method="post" action="{{ base_path }}/name-entry">
       <input type="hidden" name="tenant_id" value="{{ tenant_id }}">
       <label>Company / Client Name</label>
       <input type="text" name="display_name" placeholder="e.g. Florin Healthcare" value="{{ tenant_name }}" required autofocus>

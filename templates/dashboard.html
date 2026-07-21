@@ -220,7 +220,7 @@
 <body>
 
 <header>
-  <img src="/static/logo.png" alt="Xero">
+  <img src="{{ base_path }}/static/logo.png" alt="Xero">
   <div class="header-text">
     <h1>Conversion Summary</h1>
     <p>Xero Data Migration</p>
@@ -313,13 +313,13 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   const formData = new URLSearchParams();
   formData.append("tenant_id", tenantId);
 
-  await fetch("/logout", {
+  await fetch("{{ base_path }}/logout", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: formData,
   });
 
-  window.location.href = "/";
+  window.location.href = "{{ base_path }}/";
 });
 
 document.querySelectorAll(".range-btn").forEach(btn => {
@@ -342,7 +342,7 @@ document.getElementById("generateBtn").addEventListener("click", async () => {
   loading.classList.add("show");
   results.classList.remove("show");
 
-  let url = `/api/summary?tenant_id=${tenantId}`;
+  let url = `{{ base_path }}/api/summary?tenant_id=${tenantId}`;
 
   if (selectedRange === "custom") {
     const from = document.getElementById("fromDate").value;
@@ -417,7 +417,7 @@ document.getElementById("generateBtn").addEventListener("click", async () => {
 document.getElementById("exportBtn").addEventListener("click", async () => {
   if (!lastSummaryData) return;
 
-  const resp = await fetch("/api/export-excel", {
+  const resp = await fetch("{{ base_path }}/api/export-excel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ data: lastSummaryData, file_ref: lastSummaryData.company_name || "" }),
