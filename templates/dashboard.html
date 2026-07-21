@@ -1,446 +1,597 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<title>Xero Conversion Summary</title>
-<style>
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-    background: #f4f6f9;
-    color: #1a2233;
-  }
+  <meta charset="UTF-8">
+  <title>Xero Conversion Summary</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
 
-  header {
-    background: #ffffff;
-    border-bottom: 1px solid #e4e7ec;
-    padding: 18px 32px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    position: sticky;
-    top: 0;
-    z-index: 10;
-  }
-  header img { width: 38px; }
-  .header-text h1 { font-size: 16px; margin: 0; }
-  .header-text p { font-size: 12px; color: #667085; margin: 2px 0 0; }
-  .header-meta {
-    margin-left: auto;
-    display: flex;
-    gap: 32px;
-    font-size: 13px;
-  }
-  .header-meta div span { display:block; color:#98A2B3; font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-bottom: 2px;}
-  .header-meta div b { font-size: 14px; }
-  .logout-btn {
-    margin-left: 24px;
-    padding: 9px 18px;
-    border: 1px solid #d0d5dd;
-    border-radius: 8px;
-    background: white;
-    color: #344054;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .logout-btn:hover { background: #f9fafb; border-color: #98A2B3; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #f4f6f9;
+      color: #1a2233;
+    }
 
-  .container { max-width: 1000px; margin: 32px auto 60px; padding: 0 24px; }
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid #e4e7ec;
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
 
-  .controls {
-    background: white;
-    border-radius: 14px;
-    border: 1px solid #e4e7ec;
-    padding: 28px;
-    margin-bottom: 24px;
-  }
-  .controls h2 { font-size: 15px; margin: 0 0 18px; color: #1a2233; }
+    header img {
+      width: 38px;
+    }
 
-  .range-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-bottom: 20px;
-  }
-  .range-btn {
-    padding: 9px 18px;
-    border: 1px solid #d0d5dd;
-    border-radius: 8px;
-    background: white;
-    cursor: pointer;
-    font-size: 13px;
-    color: #344054;
-    transition: all 0.15s ease;
-  }
-  .range-btn:hover { border-color: #13B5EA; }
-  .range-btn.active {
-    background: #13B5EA;
-    border-color: #13B5EA;
-    color: white;
-  }
+    .header-text h1 {
+      font-size: 16px;
+      margin: 0;
+    }
 
-  .custom-dates {
-    display: none;
-    gap: 12px;
-    align-items: center;
-    margin-bottom: 20px;
-  }
-  .custom-dates.show { display: flex; }
-  .custom-dates input[type=date] {
-    padding: 9px 12px;
-    border: 1px solid #d0d5dd;
-    border-radius: 8px;
-    font-size: 13px;
-  }
-  .custom-dates span { color: #98A2B3; font-size: 13px; }
+    .header-text p {
+      font-size: 12px;
+      color: #667085;
+      margin: 2px 0 0;
+    }
 
-  .btn-row { display: flex; gap: 10px; align-items: center; }
+    .header-meta {
+      margin-left: auto;
+      display: flex;
+      gap: 32px;
+      font-size: 13px;
+    }
 
-  .generate-btn {
-    background: #0b1220;
-    color: white;
-    border: none;
-    padding: 13px 30px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s ease;
-  }
-  .generate-btn:hover { background: #1a2233; }
-  .generate-btn:disabled { background: #c0c6d1; cursor: not-allowed; }
+    .header-meta div span {
+      display: block;
+      color: #98A2B3;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      margin-bottom: 2px;
+    }
 
-  .export-btn {
-    background: #13B5EA;
-    color: white;
-    border: none;
-    padding: 13px 24px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    display: none;
-    align-items: center;
-    gap: 8px;
-    transition: background 0.15s ease;
-  }
-  .export-btn:hover { background: #0f9bcb; }
+    .header-meta div b {
+      font-size: 14px;
+    }
 
-  .loading {
-    display: none;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    padding: 50px;
-    color: #667085;
-    font-size: 14px;
-  }
-  .loading.show { display: flex; }
-  .spinner {
-    width: 18px;
-    height: 18px;
-    border: 2.5px solid #d0d5dd;
-    border-top-color: #13B5EA;
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+    .logout-btn {
+      margin-left: 24px;
+      padding: 9px 18px;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      background: white;
+      color: #344054;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
 
-  #results {
-    display: none;
-    opacity: 0;
-    transform: translateY(6px);
-    transition: opacity 0.35s ease, transform 0.35s ease;
-  }
-  #results.show { display: block; opacity: 1; transform: translateY(0); }
+    .logout-btn:hover {
+      background: #f9fafb;
+      border-color: #98A2B3;
+    }
 
-  .section {
-    background: white;
-    border-radius: 14px;
-    border: 1px solid #e4e7ec;
-    padding: 26px;
-    margin-bottom: 20px;
-  }
-  .section h3 {
-    font-size: 13px;
-    margin: 0 0 16px;
-    color: #344054;
-    text-transform: uppercase;
-    letter-spacing: .05em;
-    font-weight: 700;
-  }
-  .line {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 9px 0;
-    border-bottom: 1px solid #f2f4f7;
-    font-size: 13.5px;
-  }
-  .line:last-child { border-bottom: none; }
-  .line .label { color: #475467; }
-  .line .value { font-weight: 600; }
+    .container {
+      max-width: 1000px;
+      margin: 32px auto 60px;
+      padding: 0 24px;
+    }
 
-  .badge {
-    display: inline-block;
-    padding: 3px 12px;
-    border-radius: 100px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-.badge.yes { background: #ecfdf3; color: #027a48; }
-  .badge.no { background: #f2f4f7; color: #667085; }
+    .controls {
+      background: white;
+      border-radius: 14px;
+      border: 1px solid #e4e7ec;
+      padding: 28px;
+      margin-bottom: 24px;
+    }
 
-  .txn-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13.5px;
-  }
-  .txn-table tr td {
-    border: 1px solid #d0d5dd;
-    padding: 10px 14px;
-  }
-  .txn-table tr td:first-child {
-    color: #344054;
-    width: 55%;
-  }
-  .txn-table tr td:last-child {
-    text-align: right;
-    font-weight: 600;
-  }
-  .txn-table tr.total-row td {
-    font-weight: 700;
-    background: #f2f9fc;
-  }
-</style>
+    .controls h2 {
+      font-size: 15px;
+      margin: 0 0 18px;
+      color: #1a2233;
+    }
+
+    .range-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .range-btn {
+      padding: 9px 18px;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      background: white;
+      cursor: pointer;
+      font-size: 13px;
+      color: #344054;
+      transition: all 0.15s ease;
+    }
+
+    .range-btn:hover {
+      border-color: #13B5EA;
+    }
+
+    .range-btn.active {
+      background: #13B5EA;
+      border-color: #13B5EA;
+      color: white;
+    }
+
+    .custom-dates {
+      display: none;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .custom-dates.show {
+      display: flex;
+    }
+
+    .custom-dates input[type=date] {
+      padding: 9px 12px;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .custom-dates span {
+      color: #98A2B3;
+      font-size: 13px;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .generate-btn {
+      background: #0b1220;
+      color: white;
+      border: none;
+      padding: 13px 30px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .generate-btn:hover {
+      background: #1a2233;
+    }
+
+    .generate-btn:disabled {
+      background: #c0c6d1;
+      cursor: not-allowed;
+    }
+
+    .export-btn {
+      background: #13B5EA;
+      color: white;
+      border: none;
+      padding: 13px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.15s ease;
+    }
+
+    .export-btn:hover {
+      background: #0f9bcb;
+    }
+
+    .loading {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 50px;
+      color: #667085;
+      font-size: 14px;
+    }
+
+    .loading.show {
+      display: flex;
+    }
+
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2.5px solid #d0d5dd;
+      border-top-color: #13B5EA;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    #results {
+      display: none;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.35s ease, transform 0.35s ease;
+    }
+
+    #results.show {
+      display: block;
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .section {
+      background: white;
+      border-radius: 14px;
+      border: 1px solid #e4e7ec;
+      padding: 26px;
+      margin-bottom: 20px;
+    }
+
+    .section h3 {
+      font-size: 13px;
+      margin: 0 0 16px;
+      color: #344054;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-weight: 700;
+    }
+
+    .line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid #f2f4f7;
+      font-size: 13.5px;
+    }
+
+    .line:last-child {
+      border-bottom: none;
+    }
+
+    .line .label {
+      color: #475467;
+    }
+
+    .line .value {
+      font-weight: 600;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 12px;
+      border-radius: 100px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .badge.yes {
+      background: #ecfdf3;
+      color: #027a48;
+    }
+
+    .badge.no {
+      background: #f2f4f7;
+      color: #667085;
+    }
+
+    .txn-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+
+    .txn-table tr td {
+      border: 1px solid #d0d5dd;
+      padding: 10px 14px;
+    }
+
+    .txn-table tr td:first-child {
+      color: #344054;
+      width: 55%;
+    }
+
+    .txn-table tr td:last-child {
+      text-align: right;
+      font-weight: 600;
+    }
+
+    .txn-table tr.total-row td {
+      font-weight: 700;
+      background: #f2f9fc;
+    }
+  </style>
 </head>
+
 <body>
 
-<header>
-  <img src="{{ base_path }}/static/logo.png" alt="Xero">
-  <div class="header-text">
-    <h1>Conversion Summary</h1>
-    <p>Xero Data Migration</p>
+  <header>
+    <img src="{{ base_path }}/static/logo.png" alt="Xero">
+    <div class="header-text">
+      <h1>Conversion Summary</h1>
+      <p>Xero Data Migration</p>
+    </div>
+    <div class="header-meta">
+      <div><span>Company</span><b id="metaCompany">{{ tenant_name }}</b></div>
+      <div><span>Financial Year End</span><b id="metaFY">–</b></div>
+    </div>
+    <button class="logout-btn" id="logoutBtn">Logout</button>
+  </header>
+
+  <div class="container">
+
+    <div class="controls">
+      <h2>Select Conversion Period</h2>
+      <div class="range-options">
+        <button class="range-btn active" data-range="1ytd">1 Year + YTD</button>
+        <button class="range-btn" data-range="2ytd">2 Years + YTD</button>
+        <button class="range-btn" data-range="3ytd">3 Years + YTD</button>
+        <button class="range-btn" data-range="inception">Inception to Date</button>
+        <button class="range-btn" data-range="custom">Custom Range</button>
+      </div>
+
+      <div class="custom-dates" id="customDates">
+        <input type="date" id="fromDate">
+        <span>to</span>
+        <input type="date" id="toDate">
+      </div>
+
+      <div class="btn-row">
+        <button class="generate-btn" id="generateBtn">Generate Summary</button>
+        <button class="export-btn" id="exportBtn">Export to Excel</button>
+      </div>
+    </div>
+
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <span>Fetching data from Xero, please wait…</span>
+    </div>
+
+    <div id="results">
+
+      <div class="section">
+        <h3>Overview</h3>
+        <div class="line"><span class="label">Conversion Period</span><span class="value"
+            id="rConversionPeriod">–</span></div>
+        <div class="line"><span class="label">Base Currency</span><span class="value" id="rBaseCurrency">–</span></div>
+        <div class="line"><span class="label">Enabled Currencies</span><span class="value"
+            id="rEnabledCurrencies">–</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Chart of Accounts</h3>
+        <div class="line"><span class="label">Total Accounts</span><span class="value" id="rTotalAccounts">–</span>
+        </div>
+        <div class="line"><span class="label">Bank Accounts</span><span class="value" id="rBankAccounts">–</span></div>
+        <div class="line"><span class="label">Credit Cards</span><span class="value" id="rCreditCards">–</span></div>
+        <div class="line"><span class="label">Multi-Currency</span><span class="value" id="rMultiCurrency">–</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Features</h3>
+        <div class="line"><span class="label">Class / Job / Location</span><span class="value" id="rTracking">–</span>
+        </div>
+        <div class="line"><span class="label">Tracked Inventory</span><span class="value" id="rInventory">–</span></div>
+        <div class="line"><span class="label">Payroll</span><span class="value" id="rPayroll">–</span></div>
+        <div class="line"><span class="label">Attachments</span><span class="value" id="rAttachments">–</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Number of Transactions in Conversion Period</h3>
+        <table class="txn-table">
+          <tr class="total-row">
+            <td>Total Lines</td>
+            <td id="rTotalLines">–</td>
+          </tr>
+          <tr>
+            <td>Bank</td>
+            <td id="rBankTxns">–</td>
+          </tr>
+          <tr>
+            <td>Credit Card</td>
+            <td id="rCreditCardTxns">–</td>
+          </tr>
+          <tr>
+            <td>Invoice</td>
+            <td id="rInvoices">–</td>
+          </tr>
+          <tr>
+            <td>Credit Memo</td>
+            <td id="rCreditMemos">–</td>
+          </tr>
+          <tr>
+            <td>Sales Receipt</td>
+            <td id="rSalesReceipts">–</td>
+          </tr>
+          <tr>
+            <td>Bill</td>
+            <td id="rBills">–</td>
+          </tr>
+          <tr>
+            <td>Bill Credit</td>
+            <td id="rBillCredits">–</td>
+          </tr>
+          <tr>
+            <td>Manual Journal</td>
+            <td id="rManualJournals">–</td>
+          </tr>
+        </table>
+      </div>
+
+    </div>
+
   </div>
-  <div class="header-meta">
-    <div><span>Company</span><b id="metaCompany">{{ tenant_name }}</b></div>
-    <div><span>Financial Year End</span><b id="metaFY">–</b></div>
-  </div>
-  <button class="logout-btn" id="logoutBtn">Logout</button>
-</header>
 
-<div class="container">
+  <script>
+    const tenantId = "{{ tenant_id }}";
+    let selectedRange = "1ytd";
+    let lastSummaryData = null;
 
-  <div class="controls">
-    <h2>Select Conversion Period</h2>
-    <div class="range-options">
-      <button class="range-btn active" data-range="1ytd">1 Year + YTD</button>
-      <button class="range-btn" data-range="2ytd">2 Years + YTD</button>
-      <button class="range-btn" data-range="3ytd">3 Years + YTD</button>
-      <button class="range-btn" data-range="custom">Custom Range</button>
-    </div>
+    document.getElementById("logoutBtn").addEventListener("click", async () => {
+      const formData = new URLSearchParams();
+      formData.append("tenant_id", tenantId);
 
-    <div class="custom-dates" id="customDates">
-      <input type="date" id="fromDate">
-      <span>to</span>
-      <input type="date" id="toDate">
-    </div>
+      await fetch("{{ base_path }}/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formData,
+      });
 
-    <div class="btn-row">
-      <button class="generate-btn" id="generateBtn">Generate Summary</button>
-      <button class="export-btn" id="exportBtn">Export to Excel</button>
-    </div>
-  </div>
+      window.location.href = "{{ base_path }}/";
+    });
 
-  <div class="loading" id="loading">
-    <div class="spinner"></div>
-    <span>Fetching data from Xero, please wait…</span>
-  </div>
+    document.querySelectorAll(".range-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".range-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        selectedRange = btn.dataset.range;
+        document.getElementById("customDates").classList.toggle(
+          "show", selectedRange === "custom" || selectedRange === "inception"
+        );
 
-  <div id="results">
+        if (selectedRange === "inception") {
+          // "Inception to Date" - from the very start of the company's data
+          // through today. We use a fixed far-past date as "inception" since
+          // Xero has no single "earliest record" endpoint to query directly.
+          const today = new Date().toISOString().split("T")[0];
+          document.getElementById("fromDate").value = "2000-01-01";
+          document.getElementById("toDate").value = today;
+        }
+      });
+    });
 
-    <div class="section">
-      <h3>Overview</h3>
-      <div class="line"><span class="label">Conversion Period</span><span class="value" id="rConversionPeriod">–</span></div>
-      <div class="line"><span class="label">Base Currency</span><span class="value" id="rBaseCurrency">–</span></div>
-      <div class="line"><span class="label">Enabled Currencies</span><span class="value" id="rEnabledCurrencies">–</span></div>
-    </div>
+    document.getElementById("generateBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("generateBtn");
+      const loading = document.getElementById("loading");
+      const results = document.getElementById("results");
+      const exportBtn = document.getElementById("exportBtn");
 
-    <div class="section">
-      <h3>Chart of Accounts</h3>
-      <div class="line"><span class="label">Total Accounts</span><span class="value" id="rTotalAccounts">–</span></div>
-      <div class="line"><span class="label">Bank Accounts</span><span class="value" id="rBankAccounts">–</span></div>
-      <div class="line"><span class="label">Credit Cards</span><span class="value" id="rCreditCards">–</span></div>
-      <div class="line"><span class="label">Multi-Currency</span><span class="value" id="rMultiCurrency">–</span></div>
-    </div>
+      btn.disabled = true;
+      exportBtn.style.display = "none";
+      loading.classList.add("show");
+      results.classList.remove("show");
 
-<div class="section">
-      <h3>Features</h3>
-      <div class="line"><span class="label">Class / Job / Location</span><span class="value" id="rTracking">–</span></div>
-      <div class="line"><span class="label">Tracked Inventory</span><span class="value" id="rInventory">–</span></div>
-      <div class="line"><span class="label">Payroll</span><span class="value" id="rPayroll">–</span></div>
-      <div class="line"><span class="label">Attachments</span><span class="value" id="rAttachments">–</span></div>
-    </div>
+      let url = `{{ base_path }}/api/summary?tenant_id=${tenantId}`;
 
-<div class="section">
-      <h3>Number of Transactions in Conversion Period</h3>
-      <table class="txn-table">
-        <tr class="total-row"><td>Total Lines</td><td id="rTotalLines">–</td></tr>
-        <tr><td>Bank</td><td id="rBankTxns">–</td></tr>
-        <tr><td>Credit Card</td><td id="rCreditCardTxns">–</td></tr>
-        <tr><td>Invoice</td><td id="rInvoices">–</td></tr>
-        <tr><td>Credit Memo</td><td id="rCreditMemos">–</td></tr>
-        <tr><td>Sales Receipt</td><td id="rSalesReceipts">–</td></tr>
-        <tr><td>Bill</td><td id="rBills">–</td></tr>
-        <tr><td>Bill Credit</td><td id="rBillCredits">–</td></tr>
-        <tr><td>Manual Journal</td><td id="rManualJournals">–</td></tr>
-      </table>
-    </div>
+      if (selectedRange === "custom" || selectedRange === "inception") {
+        const from = document.getElementById("fromDate").value;
+        const to = document.getElementById("toDate").value;
+        if (!from || !to) {
+          alert("Please select both From and To dates.");
+          btn.disabled = false;
+          loading.classList.remove("show");
+          return;
+        }
+        url += `&from_date=${from}&to_date=${to}`;
+      } else {
+        url += `&range_preset=${selectedRange}`;
+      }
+      try {
+        const resp = await fetch(url);
+        const data = await resp.json();
 
-  </div>
+        document.getElementById("metaCompany").innerText = data.company_name || "–";
+        document.getElementById("metaFY").innerText = data.financial_year_end || "–";
 
-</div>
+        document.getElementById("rConversionPeriod").innerText = data.conversion_period;
+        document.getElementById("rBaseCurrency").innerText = data.base_currency;
+        document.getElementById("rEnabledCurrencies").innerText = (data.enabled_currencies || []).join(", ");
 
-<script>
-const tenantId = "{{ tenant_id }}";
-let selectedRange = "1ytd";
-let lastSummaryData = null;
+        document.getElementById("rTotalAccounts").innerText = data.chart_of_accounts.total;
+        document.getElementById("rBankAccounts").innerText = data.chart_of_accounts.bank_accounts;
+        document.getElementById("rCreditCards").innerText = data.chart_of_accounts.credit_cards;
 
-document.getElementById("logoutBtn").addEventListener("click", async () => {
-  const formData = new URLSearchParams();
-  formData.append("tenant_id", tenantId);
+        const mcAccounts = data.chart_of_accounts.multi_currency_accounts;
+        document.getElementById("rMultiCurrency").innerHTML = mcAccounts.length > 0
+          ? `<span class="badge yes">Yes</span> (${mcAccounts.length})`
+          : `<span class="badge no">No</span>`;
 
-  await fetch("{{ base_path }}/logout", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: formData,
-  });
+        document.getElementById("rTracking").innerHTML = data.class_job_location.enabled
+          ? `<span class="badge yes">Yes</span> (${data.class_job_location.categories.join(", ")})`
+          : `<span class="badge no">No</span>`;
 
-  window.location.href = "{{ base_path }}/";
-});
+        document.getElementById("rInventory").innerHTML = data.tracked_inventory.enabled
+          ? `<span class="badge yes">Yes</span> (${data.tracked_inventory.count})`
+          : `<span class="badge no">No</span>`;
 
-document.querySelectorAll(".range-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".range-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    selectedRange = btn.dataset.range;
-    document.getElementById("customDates").classList.toggle("show", selectedRange === "custom");
-  });
-});
+        document.getElementById("rPayroll").innerHTML = data.payroll.enabled
+          ? `<span class="badge yes">Yes</span>`
+          : `<span class="badge no">No</span>`;
 
-document.getElementById("generateBtn").addEventListener("click", async () => {
-  const btn = document.getElementById("generateBtn");
-  const loading = document.getElementById("loading");
-  const results = document.getElementById("results");
-  const exportBtn = document.getElementById("exportBtn");
+        document.getElementById("rAttachments").innerHTML = data.attachments.count > 0
+          ? `<span class="badge yes">Yes</span> (${data.attachments.count})`
+          : `<span class="badge no">No</span>`;
 
-  btn.disabled = true;
-  exportBtn.style.display = "none";
-  loading.classList.add("show");
-  results.classList.remove("show");
+        document.getElementById("rInvoices").innerText = data.transactions_in_period.invoices;
+        document.getElementById("rBills").innerText = data.transactions_in_period.bills;
+        document.getElementById("rCreditMemos").innerText = data.transactions_in_period.credit_memos;
+        document.getElementById("rBillCredits").innerText = data.transactions_in_period.bill_credits;
+        document.getElementById("rBankTxns").innerText = data.transactions_in_period.bank_transactions;
+        document.getElementById("rManualJournals").innerText = data.transactions_in_period.manual_journals;
+        document.getElementById("rSalesReceipts").innerText = data.transactions_in_period.sales_receipts;
+        document.getElementById("rCreditCardTxns").innerText = data.transactions_in_period.credit_card_transactions ?? 0;
+        document.getElementById("rTotalLines").innerText = data.transactions_in_period.total_lines;
+        lastSummaryData = data;
+        exportBtn.style.display = "inline-flex";
+        results.classList.add("show");
+      } catch (e) {
+        alert("Error generating summary: " + e.message);
+      } finally {
+        btn.disabled = false;
+        loading.classList.remove("show");
+      }
+    });
 
-  let url = `{{ base_path }}/api/summary?tenant_id=${tenantId}`;
+    document.getElementById("exportBtn").addEventListener("click", async () => {
+      if (!lastSummaryData) return;
 
-  if (selectedRange === "custom") {
-    const from = document.getElementById("fromDate").value;
-    const to = document.getElementById("toDate").value;
-    if (!from || !to) {
-      alert("Please select both From and To dates.");
-      btn.disabled = false;
-      loading.classList.remove("show");
-      return;
-    }
-    url += `&from_date=${from}&to_date=${to}`;
-  } else {
-    url += `&range_preset=${selectedRange}`;
-  }
+      const resp = await fetch("{{ base_path }}/api/export-excel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: lastSummaryData, file_ref: lastSummaryData.company_name || "" }),
+      });
 
-  try {
-    const resp = await fetch(url);
-    const data = await resp.json();
+      const blob = await resp.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
 
-    document.getElementById("metaCompany").innerText = data.company_name || "–";
-    document.getElementById("metaFY").innerText = data.financial_year_end || "–";
-
-    document.getElementById("rConversionPeriod").innerText = data.conversion_period;
-    document.getElementById("rBaseCurrency").innerText = data.base_currency;
-    document.getElementById("rEnabledCurrencies").innerText = (data.enabled_currencies || []).join(", ");
-
-    document.getElementById("rTotalAccounts").innerText = data.chart_of_accounts.total;
-    document.getElementById("rBankAccounts").innerText = data.chart_of_accounts.bank_accounts;
-    document.getElementById("rCreditCards").innerText = data.chart_of_accounts.credit_cards;
-
-    const mcAccounts = data.chart_of_accounts.multi_currency_accounts;
-    document.getElementById("rMultiCurrency").innerHTML = mcAccounts.length > 0
-      ? `<span class="badge yes">Yes</span> (${mcAccounts.length})`
-      : `<span class="badge no">No</span>`;
-
-    document.getElementById("rTracking").innerHTML = data.class_job_location.enabled
-      ? `<span class="badge yes">Yes</span> (${data.class_job_location.categories.join(", ")})`
-      : `<span class="badge no">No</span>`;
-
-    document.getElementById("rInventory").innerHTML = data.tracked_inventory.enabled
-      ? `<span class="badge yes">Yes</span> (${data.tracked_inventory.count})`
-      : `<span class="badge no">No</span>`;
-
-    document.getElementById("rPayroll").innerHTML = data.payroll.enabled
-      ? `<span class="badge yes">Yes</span>`
-      : `<span class="badge no">No</span>`;
-
-    document.getElementById("rAttachments").innerHTML = data.attachments.count > 0
-      ? `<span class="badge yes">Yes</span> (${data.attachments.count})`
-      : `<span class="badge no">No</span>`;
-
-    document.getElementById("rInvoices").innerText = data.transactions_in_period.invoices;
-    document.getElementById("rBills").innerText = data.transactions_in_period.bills;
-    document.getElementById("rCreditMemos").innerText = data.transactions_in_period.credit_memos;
-    document.getElementById("rBillCredits").innerText = data.transactions_in_period.bill_credits;
-    document.getElementById("rBankTxns").innerText = data.transactions_in_period.bank_transactions;
-    document.getElementById("rManualJournals").innerText = data.transactions_in_period.manual_journals;
-    document.getElementById("rSalesReceipts").innerText = data.transactions_in_period.sales_receipts;
-    document.getElementById("rCreditCardTxns").innerText = data.transactions_in_period.credit_card_transactions ?? 0;
-    document.getElementById("rTotalLines").innerText = data.transactions_in_period.total_lines;
-    lastSummaryData = data;
-    exportBtn.style.display = "inline-flex";
-    results.classList.add("show");
-  } catch (e) {
-    alert("Error generating summary: " + e.message);
-  } finally {
-    btn.disabled = false;
-    loading.classList.remove("show");
-  }
-});
-
-document.getElementById("exportBtn").addEventListener("click", async () => {
-  if (!lastSummaryData) return;
-
-  const resp = await fetch("{{ base_path }}/api/export-excel", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data: lastSummaryData, file_ref: lastSummaryData.company_name || "" }),
-  });
-
-  const blob = await resp.blob();
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-
-  const disposition = resp.headers.get("Content-Disposition");
-  let filename = "Xero_Conversion_Summary.xlsx";
-  if (disposition) {
-    const match = disposition.match(/filename="(.+)"/);
-    if (match) filename = match[1];
-  }
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(url);
-});
-</script>
+      const disposition = resp.headers.get("Content-Disposition");
+      let filename = "Xero_Conversion_Summary.xlsx";
+      if (disposition) {
+        const match = disposition.match(/filename="(.+)"/);
+        if (match) filename = match[1];
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    });
+  </script>
 
 </body>
+
 </html>
