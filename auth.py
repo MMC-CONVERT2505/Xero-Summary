@@ -447,6 +447,55 @@ def subtract_years(d: date, years: int) -> date:
 # Main summary endpoint - called only when "Generate Summary" is clicked
 # --------------------------------------------------------------------
 
+@app.get("/api/inception-date")
+async def api_inception_date(tenant_id: str):
+    """Finds the earliest transaction date across Invoices, BankTransactions,
+    and ManualJournals - used to auto-fill the 'Inception to Date' button
+    with the actual date the company's data begins, instead of a guess."""
+    access_token = await get_valid_access_token(tenant_id)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Xero-tenant-id": tenant_id,
+        "Accept": "application/json",
+    }
+
+    earliest_dates = []
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        async def get_earliest(endpoint: str, date_field: str = "Date"):
+            try:
+                resp = await xero_get(
+                    client, f"{API_BASE}/{endpoint}", headers,
+                    params={"order": f"{date_field} ASC", "page": 1},
+                )
+                data = resp.json().get(endpoint, [])
+                if data:
+                    d = data[0].get(date_field)
+                    if d:
+                        if d.startswith("/Date("):
+                            millis = int(d.split("(")[1].split("+")[0].split("-")[0].rstrip(")/"))
+                            return datetime.utcfromtimestamp(millis / 1000).date()
+                        return datetime.strptime(d.split("T")[0], "%Y-%m-%d").date()
+            except Exception as e:
+                print(f"[INCEPTION] Could not fetch earliest {endpoint}: {e}")
+            return None
+
+        for endpoint in ("Invoices", "BankTransactions", "ManualJournals", "CreditNotes"):
+            d = await get_earliest(endpoint)
+            if d:
+                print(f"[INCEPTION] Earliest {endpoint} date = {d}")
+                earliest_dates.append(d)
+
+    if not earliest_dates:
+        # Fallback if nothing found - use a safe far-past default
+        inception_date = date(2000, 1, 1)
+    else:
+        inception_date = min(earliest_dates)
+
+    print(f"[INCEPTION] Final inception date = {inception_date}")
+    return JSONResponse({"inception_date": inception_date.strftime("%Y-%m-%d")})
+
+
 @app.get("/api/summary")
 async def api_summary(
     tenant_id: str,

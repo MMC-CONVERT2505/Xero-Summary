@@ -470,15 +470,28 @@
         document.getElementById("customDates").classList.toggle(
           "show", selectedRange === "custom" || selectedRange === "inception"
         );
-
-        if (selectedRange === "inception") {
-          // "Inception to Date" - from the very start of the company's data
-          // through today. We use a fixed far-past date as "inception" since
-          // Xero has no single "earliest record" endpoint to query directly.
-          const today = new Date().toISOString().split("T")[0];
+if (selectedRange === "inception") {
+      // "Inception to Date" - from the actual earliest transaction date
+      // in this org through today. Fetches the real start date from the
+      // backend instead of guessing.
+      const today = new Date().toISOString().split("T")[0];
+      document.getElementById("toDate").value = today;
+      document.getElementById("fromDate").value = "";
+      btn.disabled = true;
+      btn.innerText = "Finding start date...";
+      fetch(`{{ base_path }}/api/inception-date?tenant_id=${tenantId}`)
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById("fromDate").value = data.inception_date;
+        })
+        .catch(() => {
           document.getElementById("fromDate").value = "2000-01-01";
-          document.getElementById("toDate").value = today;
-        }
+        })
+        .finally(() => {
+          btn.disabled = false;
+          btn.innerText = "Inception to Date";
+        });
+    }
       });
     });
 
