@@ -64,12 +64,9 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 templates.env.globals["base_path"] = BASE_PATH
-
-
 # --------------------------------------------------------------------
 # SQLite persistence layer
 # --------------------------------------------------------------------
-
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
@@ -442,59 +439,9 @@ def subtract_years(d: date, years: int) -> date:
     except ValueError:
         return d.replace(year=d.year - years, day=28)
 
-
 # --------------------------------------------------------------------
 # Main summary endpoint - called only when "Generate Summary" is clicked
 # --------------------------------------------------------------------
-
-@app.get("/api/inception-date")
-async def api_inception_date(tenant_id: str):
-    """Finds the earliest transaction date across Invoices, BankTransactions,
-    and ManualJournals - used to auto-fill the 'Inception to Date' button
-    with the actual date the company's data begins, instead of a guess."""
-    access_token = await get_valid_access_token(tenant_id)
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Xero-tenant-id": tenant_id,
-        "Accept": "application/json",
-    }
-
-    earliest_dates = []
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        async def get_earliest(endpoint: str, date_field: str = "Date"):
-            try:
-                resp = await xero_get(
-                    client, f"{API_BASE}/{endpoint}", headers,
-                    params={"order": f"{date_field} ASC", "page": 1},
-                )
-                data = resp.json().get(endpoint, [])
-                if data:
-                    d = data[0].get(date_field)
-                    if d:
-                        if d.startswith("/Date("):
-                            millis = int(d.split("(")[1].split("+")[0].split("-")[0].rstrip(")/"))
-                            return datetime.utcfromtimestamp(millis / 1000).date()
-                        return datetime.strptime(d.split("T")[0], "%Y-%m-%d").date()
-            except Exception as e:
-                print(f"[INCEPTION] Could not fetch earliest {endpoint}: {e}")
-            return None
-
-        for endpoint in ("Invoices", "BankTransactions", "ManualJournals", "CreditNotes"):
-            d = await get_earliest(endpoint)
-            if d:
-                print(f"[INCEPTION] Earliest {endpoint} date = {d}")
-                earliest_dates.append(d)
-
-    if not earliest_dates:
-        # Fallback if nothing found - use a safe far-past default
-        inception_date = date(2000, 1, 1)
-    else:
-        inception_date = min(earliest_dates)
-
-    print(f"[INCEPTION] Final inception date = {inception_date}")
-    return JSONResponse({"inception_date": inception_date.strftime("%Y-%m-%d")})
-
 
 @app.get("/api/summary")
 async def api_summary(
@@ -610,57 +557,6 @@ async def api_summary(
         items = items_resp.json().get("Items", [])
         tracked_items = [i for i in items if i.get("IsTrackedAsInventory")]
 
-        # --- Attachments count (checks Invoices, CreditNotes, BankTransactions, ManualJournals) ---
-        print("[SUMMARY] Counting Attachments...")
-
-        async def count_attachments():
-            total = 0
-            sem = asyncio.Semaphore(4)
-
-            async def fetch_one(endpoint, record_id):
-                async with sem:
-                    try:
-                        att_resp = await xero_get(
-                            client, f"{API_BASE}/{endpoint}/{record_id}/Attachments", headers,
-                        )
-                        return len(att_resp.json().get("Attachments", []))
-                    except Exception:
-                        return 0
-
-            endpoints = [
-                ("Invoices", "InvoiceID"),
-                ("CreditNotes", "CreditNoteID"),
-                ("BankTransactions", "BankTransactionID"),
-                ("ManualJournals", "ManualJournalID"),
-            ]
-            for endpoint, id_field in endpoints:
-                page = 1
-                while True:
-                    await refresh_headers()
-                    resp = await xero_get(
-                        client, f"{API_BASE}/{endpoint}", headers,
-                        params={"page": page, "where": date_filter} if endpoint != "ManualJournals" else {"page": page},
-                    )
-                    data = resp.json().get(endpoint, [])
-                    if not data:
-                        break
-
-                    tasks = [
-                        fetch_one(endpoint, record.get(id_field))
-                        for record in data
-                        if record.get("HasAttachments") and record.get(id_field)
-                    ]
-                    if tasks:
-                        results = await asyncio.gather(*tasks)
-                        total += sum(results)
-
-                    page += 1
-                    await asyncio.sleep(0.25)
-            return total
-
-        attachment_count = await count_attachments()
-        print(f"[SUMMARY] Attachments count = {attachment_count}")
-
         # --- Payroll check ---
         print("[SUMMARY] Checking Payroll...")
         payroll_enabled = False
@@ -673,49 +569,124 @@ async def api_summary(
         except Exception:
             payroll_enabled = False
 
-        # --- Paginated counts within date range ---
-        async def count_invoices_by_type(inv_type: str):
-            total = 0
-            status_breakdown = {}
+        # --- Invoices: SINGLE PASS for both Invoice (ACCREC) and Bill (ACCPAY) ---
+        # Previously this endpoint was fetched 3 separate times (once for
+        # attachments, once for ACCREC, once for ACCPAY). Attachments counting
+        # has been removed entirely (Xero has no bulk-attachments endpoint, so
+        # it wasn't reducible - it's dropped instead), and ACCREC/ACCPAY are
+        # now counted together in one pass, cutting this endpoint's page
+        # fetches from 3x down to 1x.
+        async def fetch_invoices_and_bills():
+            invoice_total = 0
+            bill_total = 0
+            invoice_status_breakdown = {}
+            bill_status_breakdown = {}
+            attachment_candidates = []  # (InvoiceID) for records with HasAttachments=true
             page = 1
             while True:
                 await refresh_headers()
-                print(f"[SUMMARY] Invoices ({inv_type}) - page {page}...")
+                print(f"[SUMMARY] Invoices - page {page}...")
                 resp = await xero_get(
                     client, f"{API_BASE}/Invoices", headers,
                     params={"page": page, "where": date_filter},
                 )
                 data = resp.json().get("Invoices", [])
                 if not data:
+                    print(f"[SUMMARY] Invoices - page {page} empty, stopping.")
                     break
+                print(f"[SUMMARY] Invoices - page {page} returned {len(data)} records")
+
                 for inv in data:
-                    if inv.get("Type") == inv_type:
-                        total += 1
-                        st = inv.get("Status", "UNKNOWN")
-                        status_breakdown[st] = status_breakdown.get(st, 0) + 1
+                    st = inv.get("Status", "UNKNOWN")
+                    inv_type = inv.get("Type")
+                    # Exclude VOIDED and DELETED - these never affect the
+                    # ledger and should never be migrated. Everything else
+                    # (AUTHORISED, PAID, DRAFT, SUBMITTED) is counted so this
+                    # stays as close as possible to what Xero's own "All"
+                    # invoices list shows.
+                    if inv_type == "ACCREC":
+                        invoice_status_breakdown[st] = invoice_status_breakdown.get(st, 0) + 1
+                        if st not in ("VOIDED", "DELETED"):
+                            invoice_total += 1
+                    elif inv_type == "ACCPAY":
+                        bill_status_breakdown[st] = bill_status_breakdown.get(st, 0) + 1
+                        if st not in ("VOIDED", "DELETED"):
+                            bill_total += 1
+
+                    # Attachment detection piggybacks on this same pass - no
+                    # extra Invoices fetch needed. Xero has no bulk-attachments
+                    # endpoint, so the only unavoidable extra calls are one
+                    # per record that actually has an attachment (below).
+                    if inv.get("HasAttachments") and inv.get("InvoiceID"):
+                        attachment_candidates.append(inv["InvoiceID"])
+
                 page += 1
                 await asyncio.sleep(0.25)
-            print(f"[SUMMARY] {inv_type} count = {total}  (by status: {status_breakdown})")
-            return total
 
-        async def count_credit_notes_by_type(note_type: str):
-            total = 0
+            print(f"[SUMMARY] Invoice (ACCREC) count = {invoice_total}  (by status: {invoice_status_breakdown})")
+            print(f"[SUMMARY] Bill (ACCPAY) count = {bill_total}  (by status: {bill_status_breakdown})")
+            print(f"[SUMMARY] Invoices/Bills with attachments to check = {len(attachment_candidates)}")
+
+            # Only hit the per-record attachment endpoint for records that
+            # actually flagged HasAttachments - never for the full dataset.
+            attachment_total = 0
+            if attachment_candidates:
+                sem = asyncio.Semaphore(4)
+
+                async def fetch_one(invoice_id):
+                    async with sem:
+                        try:
+                            att_resp = await xero_get(
+                                client, f"{API_BASE}/Invoices/{invoice_id}/Attachments", headers,
+                            )
+                            return len(att_resp.json().get("Attachments", []))
+                        except Exception:
+                            return 0
+
+                results = await asyncio.gather(*[fetch_one(i) for i in attachment_candidates])
+                attachment_total = sum(results)
+
+            print(f"[SUMMARY] Invoice/Bill attachment count = {attachment_total}")
+            return invoice_total, bill_total, attachment_total
+
+        # --- CreditNotes: SINGLE PASS for both Credit Memo and Bill Credit ---
+        async def fetch_credit_notes():
+            memo_total = 0
+            credit_total = 0
+            memo_status_breakdown = {}
+            credit_status_breakdown = {}
             page = 1
             while True:
                 await refresh_headers()
-                print(f"[SUMMARY] CreditNotes ({note_type}) - page {page}...")
+                print(f"[SUMMARY] CreditNotes - page {page}...")
                 resp = await xero_get(
                     client, f"{API_BASE}/CreditNotes", headers,
                     params={"page": page, "where": date_filter},
                 )
                 data = resp.json().get("CreditNotes", [])
                 if not data:
+                    print(f"[SUMMARY] CreditNotes - page {page} empty, stopping.")
                     break
-                total += sum(1 for n in data if n.get("Type") == note_type)
+                print(f"[SUMMARY] CreditNotes - page {page} returned {len(data)} records")
+
+                for n in data:
+                    st = n.get("Status", "UNKNOWN")
+                    note_type = n.get("Type")
+                    if note_type == "ACCRECCREDIT":
+                        memo_status_breakdown[st] = memo_status_breakdown.get(st, 0) + 1
+                        if st not in ("VOIDED", "DELETED"):
+                            memo_total += 1
+                    elif note_type == "ACCPAYCREDIT":
+                        credit_status_breakdown[st] = credit_status_breakdown.get(st, 0) + 1
+                        if st not in ("VOIDED", "DELETED"):
+                            credit_total += 1
+
                 page += 1
                 await asyncio.sleep(0.25)
-            print(f"[SUMMARY] {note_type} count = {total}")
-            return total
+
+            print(f"[SUMMARY] Credit Memo (ACCRECCREDIT) count = {memo_total}  (by status: {memo_status_breakdown})")
+            print(f"[SUMMARY] Bill Credit (ACCPAYCREDIT) count = {credit_total}  (by status: {credit_status_breakdown})")
+            return memo_total, credit_total
 
         # We fetch every BankTransaction once, bucket each one by its account
         # type, and log anything we can't classify. Two separate helper
@@ -816,10 +787,87 @@ async def api_summary(
             )
             return total
 
-        invoice_count = await count_invoices_by_type("ACCREC")
-        bill_count = await count_invoices_by_type("ACCPAY")
-        credit_memo_count = await count_credit_notes_by_type("ACCRECCREDIT")
-        bill_credit_count = await count_credit_notes_by_type("ACCPAYCREDIT")
+        # --- Purchase Orders (Addons section - kept separate from the core
+        # transactions count, never rolled into total_lines) ---
+        async def count_purchase_orders():
+            total = 0
+            status_breakdown = {}
+            page = 1
+            while True:
+                await refresh_headers()
+                print(f"[SUMMARY] PurchaseOrders - page {page}...")
+                resp = await xero_get(
+                    client, f"{API_BASE}/PurchaseOrders", headers,
+                    params={"page": page, "where": date_filter},
+                )
+                data = resp.json().get("PurchaseOrders", [])
+                if not data:
+                    print(f"[SUMMARY] PurchaseOrders - page {page} empty, stopping.")
+                    break
+                print(f"[SUMMARY] PurchaseOrders - page {page} returned {len(data)} records")
+                for po in data:
+                    st = po.get("Status", "UNKNOWN")
+                    status_breakdown[st] = status_breakdown.get(st, 0) + 1
+                    if st != "DELETED":
+                        total += 1
+                page += 1
+                await asyncio.sleep(0.25)
+            print(f"[SUMMARY] Purchase Order count = {total}  (by status: {status_breakdown})")
+            return total
+
+        # --- Quotes, shown as "Sales Order" in Addons (Xero has no native
+        # Sales Order object - Quotes is the closest equivalent, converting
+        # to an Invoice once accepted). Also kept separate from total_lines.
+        async def count_quotes():
+            total = 0
+            status_breakdown = {}
+            page = 1
+            while True:
+                await refresh_headers()
+                print(f"[SUMMARY] Quotes - page {page}...")
+                resp = await xero_get(
+                    client, f"{API_BASE}/Quotes", headers,
+                    params={"page": page, "where": date_filter},
+                )
+                data = resp.json().get("Quotes", [])
+                if not data:
+                    print(f"[SUMMARY] Quotes - page {page} empty, stopping.")
+                    break
+                print(f"[SUMMARY] Quotes - page {page} returned {len(data)} records")
+                for q in data:
+                    st = q.get("Status", "UNKNOWN")
+                    status_breakdown[st] = status_breakdown.get(st, 0) + 1
+                    if st != "DELETED":
+                        total += 1
+                page += 1
+                await asyncio.sleep(0.25)
+            print(f"[SUMMARY] Quote (Sales Order) count = {total}  (by status: {status_breakdown})")
+            return total
+
+        # --- Repeating Invoices (Addons). These are templates, not dated
+        # transactions - RepeatingInvoices has no "Date" field and its GET
+        # endpoint isn't paginated (a single fetch returns every template),
+        # so this count is a live "active templates now" snapshot and is
+        # NOT affected by the selected conversion period.
+        async def count_repeating_invoices():
+            await refresh_headers()
+            print("[SUMMARY] RepeatingInvoices - fetching...")
+            resp = await xero_get(client, f"{API_BASE}/RepeatingInvoices", headers)
+            data = resp.json().get("RepeatingInvoices", [])
+            print(f"[SUMMARY] RepeatingInvoices returned {len(data)} records")
+
+            total = 0
+            status_breakdown = {}
+            for ri in data:
+                st = ri.get("Status", "UNKNOWN")
+                status_breakdown[st] = status_breakdown.get(st, 0) + 1
+                if st not in ("VOIDED", "DELETED"):
+                    total += 1
+            print(f"[SUMMARY] Recurring Invoices count = {total}  (by status: {status_breakdown})")
+            return total
+
+        invoice_count, bill_count, attachment_count = await fetch_invoices_and_bills()
+        credit_memo_count, bill_credit_count = await fetch_credit_notes()
 
         # Bank + credit-card share one fetch, then split into two counts.
         all_bank_txns = await fetch_all_bank_transactions()
@@ -827,6 +875,9 @@ async def api_summary(
         credit_card_txn_count = count_credit_card_transactions(all_bank_txns)
 
         manual_journal_count = await count_manual_journals()
+        purchase_order_count = await count_purchase_orders()
+        sales_order_count = await count_quotes()
+        recurring_invoice_count = await count_repeating_invoices()
 
     print("[SUMMARY] Done. Sending response.\n")
 
@@ -859,7 +910,9 @@ async def api_summary(
         },
 
         "attachments": {
-            "count": attachment_count,
+            "count": attachment_count,  # Only checked on Invoices/Bills now,
+                                         # not BankTransactions/CreditNotes/
+                                         # ManualJournals - keeps this cheap.
         },
 
         "transactions_in_period": {
@@ -877,37 +930,39 @@ async def api_summary(
                 + manual_journal_count + 0
             ),
         },
+
+        # Separate section, shown below Transactions on the dashboard.
+        # Deliberately NOT folded into transactions_in_period.total_lines.
+        "addons": {
+            "purchase_orders": purchase_order_count,
+            "sales_orders": sales_order_count,
+            "recurring_invoices": recurring_invoice_count,
+        },
     })
 
 
 # --------------------------------------------------------------------
 # Excel export
 # --------------------------------------------------------------------
-
 def safe_filename(name: str) -> str:
     name = (name or "").strip() or "Xero_Conversion_Summary"
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     name = re.sub(r'\s+', "_", name)
     return name
 
-
 @app.post("/api/export-excel")
 async def export_excel(payload: dict = Body(...)):
     data = payload.get("data", {})
     file_ref = payload.get("file_ref", "")
     company_name = data.get("company_name", "Xero_Conversion_Summary")
-
     filename_base = safe_filename(file_ref if file_ref and file_ref != "–" else company_name)
     filename = f"{filename_base}.xlsx"
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary"
-
     bold = Font(bold=True)
-
     txn = data.get("transactions_in_period", {})
-
+    addons = data.get("addons", {})
     rows = [
         ("Company Name", data.get("company_name")),
         ("Conversion Period", data.get("conversion_period")),
@@ -937,6 +992,11 @@ async def export_excel(payload: dict = Body(...)):
         ("Bill", txn.get("bills")),
         ("Bill Credit", txn.get("bill_credits")),
         ("Manual Journal", txn.get("manual_journals")),
+        ("", ""),
+        ("Addons", ""),
+        ("Purchase Order", addons.get("purchase_orders")),
+        ("Sales Order", addons.get("sales_orders")),
+        ("Recurring Invoices", addons.get("recurring_invoices")),
     ]
 
     for label, value in rows:
@@ -947,6 +1007,7 @@ async def export_excel(payload: dict = Body(...)):
         if cell.value in (
             "Chart of Accounts", "Features",
             "Number of Transactions in Conversion Period", "Company Name",
+            "Addons",
         ):
             cell.font = bold
 

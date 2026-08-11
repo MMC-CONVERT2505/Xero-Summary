@@ -440,6 +440,24 @@
         </table>
       </div>
 
+      <div class="section">
+        <h3>Addons</h3>
+        <table class="txn-table">
+          <tr>
+            <td>Purchase Order</td>
+            <td id="rPurchaseOrders">–</td>
+          </tr>
+          <tr>
+            <td>Sales Order</td>
+            <td id="rSalesOrders">–</td>
+          </tr>
+          <tr>
+            <td>Recurring Invoices</td>
+            <td id="rRecurringInvoices">–</td>
+          </tr>
+        </table>
+      </div>
+
     </div>
 
   </div>
@@ -566,6 +584,9 @@ if (selectedRange === "inception") {
         document.getElementById("rSalesReceipts").innerText = data.transactions_in_period.sales_receipts;
         document.getElementById("rCreditCardTxns").innerText = data.transactions_in_period.credit_card_transactions ?? 0;
         document.getElementById("rTotalLines").innerText = data.transactions_in_period.total_lines;
+        document.getElementById("rPurchaseOrders").innerText = data.addons?.purchase_orders ?? 0;
+        document.getElementById("rSalesOrders").innerText = data.addons?.sales_orders ?? 0;
+        document.getElementById("rRecurringInvoices").innerText = data.addons?.recurring_invoices ?? 0;
         lastSummaryData = data;
         exportBtn.style.display = "inline-flex";
         results.classList.add("show");
