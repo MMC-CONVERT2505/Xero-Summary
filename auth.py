@@ -295,7 +295,6 @@ async def name_entry(request: Request, tenant_id: str = None):
         {"tenant_id": tenant_id, "tenant_name": row["tenant_name"]},
     )
 
-
 @app.post("/name-entry")
 async def name_entry_submit(tenant_id: str = Form(...), display_name: str = Form(...)):
     row = get_token_row(tenant_id)
@@ -579,6 +578,8 @@ async def api_summary(
         async def fetch_invoices_and_bills():
             invoice_total = 0
             bill_total = 0
+            invoice_line_items_total = 0
+            bill_line_items_total = 0
             invoice_status_breakdown = {}
             bill_status_breakdown = {}
             attachment_candidates = []  # (InvoiceID) for records with HasAttachments=true
@@ -588,7 +589,7 @@ async def api_summary(
                 print(f"[SUMMARY] Invoices - page {page}...")
                 resp = await xero_get(
                     client, f"{API_BASE}/Invoices", headers,
-                    params={"page": page, "where": date_filter},
+                    params={"page": page, "where": date_filter, "summaryOnly": "false"},
                 )
                 data = resp.json().get("Invoices", [])
                 if not data:
@@ -608,10 +609,12 @@ async def api_summary(
                         invoice_status_breakdown[st] = invoice_status_breakdown.get(st, 0) + 1
                         if st not in ("VOIDED", "DELETED"):
                             invoice_total += 1
+                            invoice_line_items_total += len(inv.get("LineItems", []) or [])
                     elif inv_type == "ACCPAY":
                         bill_status_breakdown[st] = bill_status_breakdown.get(st, 0) + 1
                         if st not in ("VOIDED", "DELETED"):
                             bill_total += 1
+                            bill_line_items_total += len(inv.get("LineItems", []) or [])
 
                     # Attachment detection piggybacks on this same pass - no
                     # extra Invoices fetch needed. Xero has no bulk-attachments
@@ -625,6 +628,8 @@ async def api_summary(
 
             print(f"[SUMMARY] Invoice (ACCREC) count = {invoice_total}  (by status: {invoice_status_breakdown})")
             print(f"[SUMMARY] Bill (ACCPAY) count = {bill_total}  (by status: {bill_status_breakdown})")
+            print(f"[SUMMARY] Invoice LineItems total = {invoice_line_items_total}")
+            print(f"[SUMMARY] Bill LineItems total = {bill_line_items_total}")
             print(f"[SUMMARY] Invoices/Bills with attachments to check = {len(attachment_candidates)}")
 
             # Only hit the per-record attachment endpoint for records that
@@ -647,12 +652,14 @@ async def api_summary(
                 attachment_total = sum(results)
 
             print(f"[SUMMARY] Invoice/Bill attachment count = {attachment_total}")
-            return invoice_total, bill_total, attachment_total
+            return invoice_total, bill_total, attachment_total, invoice_line_items_total, bill_line_items_total
 
         # --- CreditNotes: SINGLE PASS for both Credit Memo and Bill Credit ---
         async def fetch_credit_notes():
             memo_total = 0
             credit_total = 0
+            memo_line_items_total = 0
+            credit_line_items_total = 0
             memo_status_breakdown = {}
             credit_status_breakdown = {}
             page = 1
@@ -661,7 +668,7 @@ async def api_summary(
                 print(f"[SUMMARY] CreditNotes - page {page}...")
                 resp = await xero_get(
                     client, f"{API_BASE}/CreditNotes", headers,
-                    params={"page": page, "where": date_filter},
+                    params={"page": page, "where": date_filter, "summaryOnly": "false"},
                 )
                 data = resp.json().get("CreditNotes", [])
                 if not data:
@@ -676,17 +683,21 @@ async def api_summary(
                         memo_status_breakdown[st] = memo_status_breakdown.get(st, 0) + 1
                         if st not in ("VOIDED", "DELETED"):
                             memo_total += 1
+                            memo_line_items_total += len(n.get("LineItems", []) or [])
                     elif note_type == "ACCPAYCREDIT":
                         credit_status_breakdown[st] = credit_status_breakdown.get(st, 0) + 1
                         if st not in ("VOIDED", "DELETED"):
                             credit_total += 1
+                            credit_line_items_total += len(n.get("LineItems", []) or [])
 
                 page += 1
                 await asyncio.sleep(0.25)
 
             print(f"[SUMMARY] Credit Memo (ACCRECCREDIT) count = {memo_total}  (by status: {memo_status_breakdown})")
             print(f"[SUMMARY] Bill Credit (ACCPAYCREDIT) count = {credit_total}  (by status: {credit_status_breakdown})")
-            return memo_total, credit_total
+            print(f"[SUMMARY] Credit Memo LineItems total = {memo_line_items_total}")
+            print(f"[SUMMARY] Bill Credit LineItems total = {credit_line_items_total}")
+            return memo_total, credit_total, memo_line_items_total, credit_line_items_total
 
         # We fetch every BankTransaction once, bucket each one by its account
         # type, and log anything we can't classify. Two separate helper
@@ -700,7 +711,7 @@ async def api_summary(
                 print(f"[SUMMARY] BankTransactions - page {page}...")
                 resp = await xero_get(
                     client, f"{API_BASE}/BankTransactions", headers,
-                    params={"page": page, "where": date_filter},
+                    params={"page": page, "where": date_filter, "summaryOnly": "false"},
                 )
                 data = resp.json().get("BankTransactions", [])
                 if not data:
@@ -715,11 +726,13 @@ async def api_summary(
 
         def count_bank_transactions(all_txns):
             total = 0
+            line_items_total = 0
             unclassified = 0
             for txn in all_txns:
                 acc_id = txn.get("BankAccount", {}).get("AccountID")
                 if acc_id in bank_account_ids:
                     total += 1
+                    line_items_total += len(txn.get("LineItems", []) or [])
                 elif acc_id not in credit_card_account_ids:
                     # Account isn't in either set -> log it so we can see why
                     unclassified += 1
@@ -730,16 +743,18 @@ async def api_summary(
                         )
             if unclassified:
                 print(f"[SUMMARY] WARNING: {unclassified} bank txns had accounts in neither BANK nor CREDITCARD set")
-            print(f"[SUMMARY] Bank transactions = {total}")
-            return total
+            print(f"[SUMMARY] Bank transactions = {total}, LineItems total = {line_items_total}")
+            return total, line_items_total
 
         def count_credit_card_transactions(all_txns):
-            total = sum(
-                1 for txn in all_txns
-                if txn.get("BankAccount", {}).get("AccountID") in credit_card_account_ids
-            )
-            print(f"[SUMMARY] Credit card transactions = {total}")
-            return total
+            total = 0
+            line_items_total = 0
+            for txn in all_txns:
+                if txn.get("BankAccount", {}).get("AccountID") in credit_card_account_ids:
+                    total += 1
+                    line_items_total += len(txn.get("LineItems", []) or [])
+            print(f"[SUMMARY] Credit card transactions = {total}, LineItems total = {line_items_total}")
+            return total, line_items_total
 
         def parse_xero_date(d: str):
             """Handles both ISO ('2024-01-15T00:00:00') and the older
@@ -753,6 +768,7 @@ async def api_summary(
 
         async def count_manual_journals():
             total = 0
+            line_items_total = 0
             fetched = 0
             parse_failures = 0
             page = 1
@@ -775,6 +791,8 @@ async def api_summary(
                         mj_date = parse_xero_date(d)
                         if mj_date and start <= mj_date <= end:
                             total += 1
+                            # ManualJournals use "JournalLines", not "LineItems".
+                            line_items_total += len(mj.get("JournalLines", []) or [])
                     except Exception as e:
                         parse_failures += 1
                         if parse_failures <= 5:
@@ -785,7 +803,178 @@ async def api_summary(
                 f"[SUMMARY] ManualJournals fetched={fetched}, "
                 f"in-range={total}, parse_failures={parse_failures}"
             )
+            print(f"[SUMMARY] ManualJournal JournalLines total = {line_items_total}")
+            return total, line_items_total
+
+        # --- General Ledger (Journals) - the actual source of "Total Lines".
+        # Every transaction type (Invoice, Bill, BankTransaction,
+        # ManualJournal, Payment, etc.) posts its double-entry ledger effect
+        # here, so this is a completely separate fetch from everything
+        # above - it can't reuse Invoices/BankTransactions/CreditNotes/
+        # ManualJournals data, it's Xero's own ledger-level rollup.
+        # Pagination is offset=JournalNumber based (NOT page-number based
+        # like every other endpoint in this file), and /Journals has no
+        # "where" filter support, so date-range filtering is client-side
+        # per JournalDate - same pattern as count_manual_journals() above.
+        async def count_general_ledger_lines():
+            total_journals = 0
+            line_items_total = 0
+            parse_failures = 0
+            offset = 0
+            while True:
+                await refresh_headers()
+                print(f"[SUMMARY] Journals - offset {offset}...")
+                resp = await xero_get(
+                    client, f"{API_BASE}/Journals", headers,
+                    params={"offset": offset},
+                )
+                data = resp.json().get("Journals", [])
+                if not data:
+                    print(f"[SUMMARY] Journals - offset {offset} empty, stopping.")
+                    break
+                print(f"[SUMMARY] Journals - offset {offset} returned {len(data)} records")
+
+                for j in data:
+                    d = j.get("JournalDate")
+                    try:
+                        j_date = parse_xero_date(d)
+                        if j_date and start <= j_date <= end:
+                            total_journals += 1
+                            line_items_total += len(j.get("JournalLines", []) or [])
+                    except Exception as e:
+                        parse_failures += 1
+                        if parse_failures <= 5:
+                            print(f"[SUMMARY] Could not parse Journal date {d!r}: {e}")
+
+                last_journal_number = data[-1].get("JournalNumber")
+                if last_journal_number is None:
+                    print(
+                        "[SUMMARY] WARNING: Journals page had no JournalNumber on "
+                        "the last record, stopping to avoid an infinite loop."
+                    )
+                    break
+                offset = last_journal_number + 1
+                await asyncio.sleep(0.25)
+
+            print(
+                f"[SUMMARY] Journals in-range={total_journals}, "
+                f"parse_failures={parse_failures}"
+            )
+            print(f"[SUMMARY] General Ledger JournalLines total = {line_items_total}")
+            return line_items_total
+
+        # --- BankTransfers - a genuinely separate endpoint from
+        # BankTransactions (it references two linked BankTransaction IDs
+        # but isn't one itself). Verified against Xero's OpenAPI spec: this
+        # endpoint has NO "page" param at all - Xero returns everything in
+        # a single call - and the BankTransfer object has no LineItems
+        # field, so this only contributes a record count, not to the
+        # LineItems total.
+        async def fetch_bank_transfers():
+            await refresh_headers()
+            print("[SUMMARY] BankTransfers - fetching (single call, not paginated)...")
+            resp = await xero_get(
+                client, f"{API_BASE}/BankTransfers", headers,
+                params={"where": date_filter},
+            )
+            data = resp.json().get("BankTransfers", [])
+            print(f"[SUMMARY] BankTransfers returned {len(data)} records")
+            return len(data)
+
+        # --- Payments - covers invoice payments, bill payments,
+        # credit-note allocations, and overpayment/prepayment payments,
+        # all via the "PaymentType" field on this one endpoint. Verified
+        # against Xero's OpenAPI spec: Payment has NO LineItems field, so
+        # this only contributes a record count, not to the LineItems total.
+        async def count_payments():
+            total = 0
+            type_breakdown = {}
+            page = 1
+            while True:
+                await refresh_headers()
+                print(f"[SUMMARY] Payments - page {page}...")
+                resp = await xero_get(
+                    client, f"{API_BASE}/Payments", headers,
+                    params={"page": page, "where": date_filter},
+                )
+                data = resp.json().get("Payments", [])
+                if not data:
+                    print(f"[SUMMARY] Payments - page {page} empty, stopping.")
+                    break
+                print(f"[SUMMARY] Payments - page {page} returned {len(data)} records")
+                for p in data:
+                    pt = p.get("PaymentType", "UNKNOWN")
+                    type_breakdown[pt] = type_breakdown.get(pt, 0) + 1
+                    total += 1
+                page += 1
+                await asyncio.sleep(0.25)
+            print(f"[SUMMARY] Payments count = {total}  (by type: {type_breakdown})")
             return total
+
+        # --- Overpayments - its own document type (LineItems, SubTotal,
+        # etc.), distinct from the SPEND-OVERPAYMENT/RECEIVE-OVERPAYMENT
+        # records already counted inside BankTransactions above (those
+        # capture the bank movement; this is the source document). Verified
+        # against Xero's OpenAPI spec: paginated, HAS LineItems.
+        async def fetch_overpayments():
+            total = 0
+            line_items_total = 0
+            type_breakdown = {}
+            page = 1
+            while True:
+                await refresh_headers()
+                print(f"[SUMMARY] Overpayments - page {page}...")
+                resp = await xero_get(
+                    client, f"{API_BASE}/Overpayments", headers,
+                    params={"page": page, "where": date_filter},
+                )
+                data = resp.json().get("Overpayments", [])
+                if not data:
+                    print(f"[SUMMARY] Overpayments - page {page} empty, stopping.")
+                    break
+                print(f"[SUMMARY] Overpayments - page {page} returned {len(data)} records")
+                for o in data:
+                    ty = o.get("Type", "UNKNOWN")
+                    type_breakdown[ty] = type_breakdown.get(ty, 0) + 1
+                    total += 1
+                    line_items_total += len(o.get("LineItems", []) or [])
+                page += 1
+                await asyncio.sleep(0.25)
+            print(f"[SUMMARY] Overpayments count = {total}  (by type: {type_breakdown})")
+            print(f"[SUMMARY] Overpayments LineItems total = {line_items_total}")
+            return total, line_items_total
+
+        # --- Prepayments - its own document type, distinct from the
+        # SPEND-PREPAYMENT/RECEIVE-PREPAYMENT records already counted
+        # inside BankTransactions above. Verified against Xero's OpenAPI
+        # spec: paginated, HAS LineItems.
+        async def fetch_prepayments():
+            total = 0
+            line_items_total = 0
+            type_breakdown = {}
+            page = 1
+            while True:
+                await refresh_headers()
+                print(f"[SUMMARY] Prepayments - page {page}...")
+                resp = await xero_get(
+                    client, f"{API_BASE}/Prepayments", headers,
+                    params={"page": page, "where": date_filter},
+                )
+                data = resp.json().get("Prepayments", [])
+                if not data:
+                    print(f"[SUMMARY] Prepayments - page {page} empty, stopping.")
+                    break
+                print(f"[SUMMARY] Prepayments - page {page} returned {len(data)} records")
+                for pp in data:
+                    ty = pp.get("Type", "UNKNOWN")
+                    type_breakdown[ty] = type_breakdown.get(ty, 0) + 1
+                    total += 1
+                    line_items_total += len(pp.get("LineItems", []) or [])
+                page += 1
+                await asyncio.sleep(0.25)
+            print(f"[SUMMARY] Prepayments count = {total}  (by type: {type_breakdown})")
+            print(f"[SUMMARY] Prepayments LineItems total = {line_items_total}")
+            return total, line_items_total
 
         # --- Purchase Orders (Addons section - kept separate from the core
         # transactions count, never rolled into total_lines) ---
@@ -866,18 +1055,92 @@ async def api_summary(
             print(f"[SUMMARY] Recurring Invoices count = {total}  (by status: {status_breakdown})")
             return total
 
-        invoice_count, bill_count, attachment_count = await fetch_invoices_and_bills()
-        credit_memo_count, bill_credit_count = await fetch_credit_notes()
+        (
+            invoice_count, bill_count, attachment_count,
+            invoice_line_items_total, bill_line_items_total,
+        ) = await fetch_invoices_and_bills()
+        (
+            credit_memo_count, bill_credit_count,
+            credit_memo_line_items_total, bill_credit_line_items_total,
+        ) = await fetch_credit_notes()
 
         # Bank + credit-card share one fetch, then split into two counts.
         all_bank_txns = await fetch_all_bank_transactions()
-        bank_txn_count = count_bank_transactions(all_bank_txns)
-        credit_card_txn_count = count_credit_card_transactions(all_bank_txns)
+        bank_txn_count, bank_line_items_total = count_bank_transactions(all_bank_txns)
+        credit_card_txn_count, credit_card_line_items_total = count_credit_card_transactions(all_bank_txns)
 
-        manual_journal_count = await count_manual_journals()
+        manual_journal_count, manual_journal_line_items_total = await count_manual_journals()
         purchase_order_count = await count_purchase_orders()
         sales_order_count = await count_quotes()
         recurring_invoice_count = await count_repeating_invoices()
+
+        # --- "Bank" is broader than just BankTransactions: BankTransfers,
+        # Payments, Overpayments and Prepayments are all bank-related money
+        # movement too, so they're folded into ONE combined Bank figure -
+        # both the "Bank" row shown in the UI and its contribution to Total
+        # Lines. Nothing else (Invoices, Bills, Credit Notes, Manual
+        # Journals, Credit Card) is touched - this only expands what "Bank"
+        # covers.
+        bank_transfer_count = await fetch_bank_transfers()  # no LineItems
+        payment_count = await count_payments()              # no LineItems
+        overpayment_count, overpayment_line_items_total = await fetch_overpayments()
+        prepayment_count, prepayment_line_items_total = await fetch_prepayments()
+
+        combined_bank_records = (
+            bank_txn_count + bank_transfer_count + payment_count
+            + overpayment_count + prepayment_count
+        )
+        combined_bank_line_items = (
+            bank_line_items_total + overpayment_line_items_total + prepayment_line_items_total
+            # BankTransfers/Payments have no LineItems field (verified
+            # against Xero's OpenAPI spec), so they only add records above.
+        )
+        combined_bank_total = combined_bank_records + combined_bank_line_items
+        print(
+            f"[SUMMARY] Bank (combined) - BankTransactions={bank_txn_count}+{bank_line_items_total}, "
+            f"BankTransfers={bank_transfer_count}, Payments={payment_count}, "
+            f"Overpayments={overpayment_count}+{overpayment_line_items_total}, "
+            f"Prepayments={prepayment_count}+{prepayment_line_items_total} "
+            f"-> records={combined_bank_records}, line_items={combined_bank_line_items}, "
+            f"combined_total={combined_bank_total}"
+        )
+
+        # /Journals (General Ledger) is gated behind Xero's Advanced pricing
+        # tier plus a security assessment and use-case approval - most apps
+        # get a 401 here. Falls back to a LineItems-sum total (computed
+        # above from the endpoints we do have access to) so the summary
+        # still returns something useful instead of a 500 - Bank's
+        # contribution here is the combined_bank_total above (records +
+        # LineItems across all 5 bank-related endpoints); every other
+        # category is unchanged, still LineItems-only. If/when this app
+        # gets Journals access, general_ledger_line_count will populate and
+        # total_lines below switches to the true ledger-level number
+        # automatically.
+        line_items_fallback_total = (
+            invoice_line_items_total + bill_line_items_total
+            + credit_memo_line_items_total + bill_credit_line_items_total
+            + combined_bank_total + credit_card_line_items_total
+            + manual_journal_line_items_total
+            + 0  # sales_receipts, always 0
+        )
+        try:
+            general_ledger_line_count = await count_general_ledger_lines()
+        except Exception as e:
+            print(
+                f"[SUMMARY] Journals fetch failed - this endpoint requires Xero's "
+                f"Advanced tier + security assessment + use-case approval, most "
+                f"apps don't have access. Falling back to LineItems-sum total. Error: {e}"
+            )
+            general_ledger_line_count = line_items_fallback_total
+
+        print(
+            f"[SUMMARY] Total Lines (LineItems-based fallback) - "
+            f"invoices={invoice_line_items_total}, bills={bill_line_items_total}, "
+            f"credit_memos={credit_memo_line_items_total}, bill_credits={bill_credit_line_items_total}, "
+            f"bank(combined)={combined_bank_total}, credit_card={credit_card_line_items_total}, "
+            f"manual_journals={manual_journal_line_items_total}, total={line_items_fallback_total}"
+        )
+        print(f"[SUMMARY] Total Lines (value used in response) = {general_ledger_line_count}")
 
     print("[SUMMARY] Done. Sending response.\n")
 
@@ -920,15 +1183,24 @@ async def api_summary(
             "bills": bill_count,
             "credit_memos": credit_memo_count,
             "bill_credits": bill_credit_count,
-            "bank_transactions": bank_txn_count,
+            # "Bank" = combined records across BankTransactions,
+            # BankTransfers, Payments, Overpayments and Prepayments - all
+            # bank-related money movement, not just the raw BankTransactions
+            # count. See combined_bank_records above.
+            "bank_transactions": combined_bank_records,
             "credit_card_transactions": credit_card_txn_count,
             "manual_journals": manual_journal_count,
             "sales_receipts": 0,
-            "total_lines": (
-                invoice_count + bill_count + credit_memo_count
-                + bill_credit_count + bank_txn_count + credit_card_txn_count
-                + manual_journal_count + 0
-            ),
+            # General Ledger (Journals) based when available - Xero's
+            # /Journals endpoint is the true ledger-level rollup (every
+            # transaction type's double-entry effect), which is what the
+            # reference report's "Total Lines" actually measures. Falls
+            # back to a LineItems-sum if this app doesn't have Journals
+            # access (see count_general_ledger_lines() try/except above);
+            # Bank's contribution to that fallback is combined_bank_total
+            # (records + LineItems across all 5 bank-related endpoints).
+            # Every other per-category count above is unaffected.
+            "total_lines": general_ledger_line_count,
         },
 
         # Separate section, shown below Transactions on the dashboard.
