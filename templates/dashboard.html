@@ -437,6 +437,30 @@
             <td>Manual Journal</td>
             <td id="rManualJournals">–</td>
           </tr>
+          <tr>
+            <td>Receivable Credit Note Allocation</td>
+            <td id="rReceivableCreditNoteAllocations">–</td>
+          </tr>
+          <tr>
+            <td>Payable Credit Note Allocation</td>
+            <td id="rPayableCreditNoteAllocations">–</td>
+          </tr>
+          <tr>
+            <td>Receivable Credit Note</td>
+            <td id="rReceivableCreditNotes">–</td>
+          </tr>
+          <tr>
+            <td>Payable Credit Note</td>
+            <td id="rPayableCreditNotes">–</td>
+          </tr>
+          <tr>
+            <td>Receivable Credit Note Refund</td>
+            <td id="rReceivableCreditNoteRefunds">–</td>
+          </tr>
+          <tr>
+            <td>Payable Credit Note Refund</td>
+            <td id="rPayableCreditNoteRefunds">–</td>
+          </tr>
         </table>
       </div>
 
@@ -582,6 +606,12 @@ if (selectedRange === "inception") {
         document.getElementById("rBankTxns").innerText = data.transactions_in_period.bank_transactions;
         document.getElementById("rManualJournals").innerText = data.transactions_in_period.manual_journals;
         document.getElementById("rSalesReceipts").innerText = data.transactions_in_period.sales_receipts;
+        document.getElementById("rReceivableCreditNoteAllocations").innerText = data.transactions_in_period.receivable_credit_note_allocations;
+        document.getElementById("rPayableCreditNoteAllocations").innerText = data.transactions_in_period.payable_credit_note_allocations;
+        document.getElementById("rReceivableCreditNotes").innerText = data.transactions_in_period.receivable_credit_notes;
+        document.getElementById("rPayableCreditNotes").innerText = data.transactions_in_period.payable_credit_notes;
+        document.getElementById("rReceivableCreditNoteRefunds").innerText = data.transactions_in_period.receivable_credit_note_refunds;
+        document.getElementById("rPayableCreditNoteRefunds").innerText = data.transactions_in_period.payable_credit_note_refunds;
         document.getElementById("rCreditCardTxns").innerText = data.transactions_in_period.credit_card_transactions ?? 0;
         document.getElementById("rTotalLines").innerText = data.transactions_in_period.total_lines;
         document.getElementById("rPurchaseOrders").innerText = data.addons?.purchase_orders ?? 0;
