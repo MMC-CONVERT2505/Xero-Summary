@@ -152,6 +152,27 @@
       font-size: 13px;
     }
 
+    .inception-info {
+      display: none;
+      color: #475467;
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+
+    .inception-info.show {
+      display: block;
+    }
+
+    .skip-attachments-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #475467;
+      font-size: 13px;
+      margin-bottom: 20px;
+      cursor: pointer;
+    }
+
     .btn-row {
       display: flex;
       gap: 10px;
@@ -200,16 +221,28 @@
 
     .loading {
       display: none;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 12px;
-      padding: 50px;
+      gap: 14px;
+      padding: 50px 20px;
       color: #667085;
       font-size: 14px;
+      text-align: center;
     }
 
     .loading.show {
       display: flex;
+    }
+
+    #loadingProgress {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12.5px;
+      color: #475467;
+      max-width: 640px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .spinner {
@@ -357,6 +390,13 @@
         <input type="date" id="toDate">
       </div>
 
+      <div class="inception-info" id="inceptionInfo"></div>
+
+      <label class="skip-attachments-toggle">
+        <input type="checkbox" id="skipAttachments">
+        Skip attachment count (much faster for large orgs - Xero has no bulk-attachments endpoint, so counting them means one API call per record)
+      </label>
+
       <div class="btn-row">
         <button class="generate-btn" id="generateBtn">Generate Summary</button>
         <button class="export-btn" id="exportBtn">Export to Excel</button>
@@ -365,7 +405,7 @@
 
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <span>Fetching data from Xero, please wait…</span>
+      <span id="loadingProgress">Fetching data from Xero, please wait…</span>
     </div>
 
     <div id="results">
@@ -387,14 +427,21 @@
         <div class="line"><span class="label">Credit Cards</span><span class="value" id="rCreditCards">–</span></div>
         <div class="line"><span class="label">Multi-Currency</span><span class="value" id="rMultiCurrency">–</span>
         </div>
+        <div class="line"><span class="label">Multi-Currency Transactions</span><span class="value" id="rMultiCurrencyTxns">–</span>
+        </div>
       </div>
 
       <div class="section">
         <h3>Features</h3>
         <div class="line"><span class="label">Class / Job / Location</span><span class="value" id="rTracking">–</span>
         </div>
+        <div class="line"><span class="label">&nbsp;&nbsp;Class</span><span class="value" id="rClass">–</span></div>
+        <div class="line"><span class="label">&nbsp;&nbsp;Job</span><span class="value" id="rJob">–</span></div>
+        <div class="line"><span class="label">&nbsp;&nbsp;Location</span><span class="value" id="rLocation">–</span></div>
         <div class="line"><span class="label">Tracked Inventory</span><span class="value" id="rInventory">–</span></div>
         <div class="line"><span class="label">Payroll</span><span class="value" id="rPayroll">–</span></div>
+        <div class="line"><span class="label">Payroll Count</span><span class="value" id="rPayrollCount">–</span></div>
+        <div class="line"><span class="label">Employees</span><span class="value" id="rEmployees">–</span></div>
         <div class="line"><span class="label">Attachments</span><span class="value" id="rAttachments">–</span></div>
       </div>
 
@@ -509,31 +556,43 @@
         document.querySelectorAll(".range-btn").forEach(b => b.classList.remove("active"));
         btn.classList.add("active");
         selectedRange = btn.dataset.range;
+        // Date pickers are only shown for "Custom Range" - "Inception to
+        // Date" resolves its own start date automatically below, so
+        // exposing editable date fields for it would be misleading (it's
+        // not actually a user-chosen range).
         document.getElementById("customDates").classList.toggle(
-          "show", selectedRange === "custom" || selectedRange === "inception"
+          "show", selectedRange === "custom"
         );
-if (selectedRange === "inception") {
-      // "Inception to Date" - from the actual earliest transaction date
-      // in this org through today. Fetches the real start date from the
-      // backend instead of guessing.
-      const today = new Date().toISOString().split("T")[0];
-      document.getElementById("toDate").value = today;
-      document.getElementById("fromDate").value = "";
-      btn.disabled = true;
-      btn.innerText = "Finding start date...";
-      fetch(`{{ base_path }}/api/inception-date?tenant_id=${tenantId}`)
-        .then(r => r.json())
-        .then(data => {
-          document.getElementById("fromDate").value = data.inception_date;
-        })
-        .catch(() => {
-          document.getElementById("fromDate").value = "2000-01-01";
-        })
-        .finally(() => {
-          btn.disabled = false;
-          btn.innerText = "Inception to Date";
-        });
-    }
+        document.getElementById("inceptionInfo").classList.toggle(
+          "show", selectedRange === "inception"
+        );
+
+        if (selectedRange === "inception") {
+          // "Inception to Date" - from the actual earliest transaction date
+          // in this org through today. Fetches the real start date from the
+          // backend instead of guessing. Still stored in the (hidden)
+          // fromDate/toDate inputs so the existing generate-summary logic
+          // below doesn't need to change.
+          const today = new Date().toISOString().split("T")[0];
+          document.getElementById("toDate").value = today;
+          document.getElementById("fromDate").value = "";
+          const info = document.getElementById("inceptionInfo");
+          info.innerText = "Finding the earliest transaction date…";
+          btn.disabled = true;
+          fetch(`{{ base_path }}/api/inception-date?tenant_id=${tenantId}`)
+            .then(r => r.json())
+            .then(data => {
+              document.getElementById("fromDate").value = data.inception_date;
+              info.innerText = `Inception date found: ${data.inception_date} (earliest transaction) → today`;
+            })
+            .catch(() => {
+              document.getElementById("fromDate").value = "2000-01-01";
+              info.innerText = "Could not find the earliest transaction date - defaulted to 2000-01-01.";
+            })
+            .finally(() => {
+              btn.disabled = false;
+            });
+        }
       });
     });
 
@@ -545,10 +604,14 @@ if (selectedRange === "inception") {
 
       btn.disabled = true;
       exportBtn.style.display = "none";
+      document.getElementById("loadingProgress").innerText = "Starting…";
       loading.classList.add("show");
       results.classList.remove("show");
 
-      let url = `{{ base_path }}/api/summary?tenant_id=${tenantId}`;
+      let url = `{{ base_path }}/api/summary/start?tenant_id=${tenantId}`;
+      if (document.getElementById("skipAttachments").checked) {
+        url += `&skip_attachments=true`;
+      }
 
       if (selectedRange === "custom" || selectedRange === "inception") {
         const from = document.getElementById("fromDate").value;
@@ -564,8 +627,45 @@ if (selectedRange === "inception") {
         url += `&range_preset=${selectedRange}`;
       }
       try {
-        const resp = await fetch(url);
-        const data = await resp.json();
+        // Starting the job returns almost instantly (the actual fetch runs
+        // in the background server-side) - this avoids holding one long
+        // HTTP request open long enough to hit a reverse-proxy/browser
+        // timeout (502) on large orgs or wide date ranges.
+        const startResp = await fetch(url);
+        if (!startResp.ok) {
+          throw new Error(`Failed to start summary (HTTP ${startResp.status})`);
+        }
+        const { job_id } = await startResp.json();
+
+        const progressEl = document.getElementById("loadingProgress");
+        let data;
+        while (true) {
+          await new Promise(r => setTimeout(r, 1500));
+          const statusResp = await fetch(`{{ base_path }}/api/summary/status?job_id=${job_id}`);
+          if (!statusResp.ok) {
+            throw new Error(`Lost track of the running summary (HTTP ${statusResp.status}) - please try again.`);
+          }
+          const job = await statusResp.json();
+          if (job.progress) {
+            progressEl.innerText = job.progress;
+          }
+          if (job.status === "done") {
+            data = job.result;
+            break;
+          }
+          if (job.status === "error") {
+            throw new Error(job.error || "Summary generation failed.");
+          }
+          // status === "running" - keep polling
+        }
+
+        // Tag the conversion period as Inception-based on the data object
+        // itself (not just the on-screen text), so the Excel export -
+        // which sends this same object back to the server - carries the
+        // same label.
+        if (selectedRange === "inception") {
+          data.conversion_period = `${data.conversion_period} (Inception to Date - from the earliest transaction on file)`;
+        }
 
         document.getElementById("metaCompany").innerText = data.company_name || "–";
         document.getElementById("metaFY").innerText = data.financial_year_end || "–";
@@ -582,10 +682,17 @@ if (selectedRange === "inception") {
         document.getElementById("rMultiCurrency").innerHTML = mcAccounts.length > 0
           ? `<span class="badge yes">Yes</span> (${mcAccounts.length})`
           : `<span class="badge no">No</span>`;
+        document.getElementById("rMultiCurrencyTxns").innerText = data.chart_of_accounts.multi_currency_transactions ?? 0;
 
         document.getElementById("rTracking").innerHTML = data.class_job_location.enabled
           ? `<span class="badge yes">Yes</span> (${data.class_job_location.categories.join(", ")})`
           : `<span class="badge no">No</span>`;
+        document.getElementById("rClass").innerHTML = data.class_job_location.class
+          ? `<span class="badge yes">Yes</span>` : `<span class="badge no">No</span>`;
+        document.getElementById("rJob").innerHTML = data.class_job_location.job
+          ? `<span class="badge yes">Yes</span>` : `<span class="badge no">No</span>`;
+        document.getElementById("rLocation").innerHTML = data.class_job_location.location
+          ? `<span class="badge yes">Yes</span>` : `<span class="badge no">No</span>`;
 
         document.getElementById("rInventory").innerHTML = data.tracked_inventory.enabled
           ? `<span class="badge yes">Yes</span> (${data.tracked_inventory.count})`
@@ -594,10 +701,14 @@ if (selectedRange === "inception") {
         document.getElementById("rPayroll").innerHTML = data.payroll.enabled
           ? `<span class="badge yes">Yes</span>`
           : `<span class="badge no">No</span>`;
+        document.getElementById("rPayrollCount").innerText = data.payroll.payroll_count;
+        document.getElementById("rEmployees").innerText = data.payroll.employee_count;
 
-        document.getElementById("rAttachments").innerHTML = data.attachments.count > 0
-          ? `<span class="badge yes">Yes</span> (${data.attachments.count})`
-          : `<span class="badge no">No</span>`;
+        document.getElementById("rAttachments").innerHTML = data.attachments.skipped
+          ? `<span class="badge no">Skipped</span>`
+          : data.attachments.count > 0
+            ? `<span class="badge yes">Yes</span> (${data.attachments.count})`
+            : `<span class="badge no">No</span>`;
 
         document.getElementById("rInvoices").innerText = data.transactions_in_period.invoices;
         document.getElementById("rBills").innerText = data.transactions_in_period.bills;

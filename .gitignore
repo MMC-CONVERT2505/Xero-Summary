@@ -3,3 +3,5 @@ __pycache__/
 venv/
 *.pyc
 xero_tokens.db
+fetch_payroll_only.py
+Infront_Training_Payroll_*/

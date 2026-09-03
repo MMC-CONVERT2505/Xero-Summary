@@ -26,6 +26,8 @@ import os
 import io
 import re
 import time
+import uuid
+import random
 import asyncio
 import sqlite3
 import secrets
@@ -171,8 +173,28 @@ async def xero_get(client: httpx.AsyncClient, url: str, headers: dict, params: d
     for _ in range(max_retries):
         resp = await client.get(url, headers=headers, params=params)
         if resp.status_code == 429:
+            # Xero sends two very different flavours of 429 under the same
+            # status code: a short per-minute throttle (fine to sleep and
+            # retry) and the app's 5000-calls/day limit being exhausted,
+            # where Retry-After can be tens of thousands of seconds (hours).
+            # Blindly sleeping for that long makes a live request look
+            # "hung" for the rest of the day, so fail fast instead and let
+            # the caller surface a clear message.
+            if resp.headers.get("X-Rate-Limit-Problem") == "day":
+                retry_after = int(resp.headers.get("Retry-After", "0"))
+                hours = round(retry_after / 3600, 1)
+                raise RuntimeError(
+                    f"Xero daily API limit reached for this app (5000 calls/day). "
+                    f"Try again in about {hours} hours (resets {resp.headers.get('Expires', 'later today/tomorrow')})."
+                )
             retry_after = int(resp.headers.get("Retry-After", "5"))
-            await asyncio.sleep(retry_after + 1)
+            # Random jitter (0-3s on top of Xero's own Retry-After) so
+            # concurrent callers that all got rate-limited at the same
+            # moment don't all wake up and retry in the same instant,
+            # immediately re-triggering the same 429 for everyone (a
+            # thundering herd that can burn through every retry and still
+            # fail, even though the request itself was fine).
+            await asyncio.sleep(retry_after + 1 + random.uniform(0, 3))
             continue
         resp.raise_for_status()
         return resp
@@ -247,6 +269,17 @@ def valid_line_items(line_items):
             continue
         kept.append(li)
     return kept, missing, zero
+
+
+def parse_xero_date(d: str):
+    """Handles both ISO ('2024-01-15T00:00:00') and the older
+    Microsoft-JSON format ('/Date(1705276800000+0000)/')."""
+    if not d:
+        return None
+    if d.startswith("/Date("):
+        millis = int(d.split("(")[1].split("+")[0].split("-")[0].rstrip(")/"))
+        return datetime.utcfromtimestamp(millis / 1000).date()
+    return datetime.strptime(d.split("T")[0], "%Y-%m-%d").date()
 
 
 # --------------------------------------------------------------------
@@ -510,17 +543,86 @@ def subtract_years(d: date, years: int) -> date:
     except ValueError:
         return d.replace(year=d.year - years, day=28)
 
+
+# --------------------------------------------------------------------
+# "Inception to Date" - finds the actual earliest transaction date in
+# this org, so the frontend's "Inception to Date" range button doesn't
+# have to guess a start date. Cheap by design: for each document type,
+# only page 1 sorted oldest-first (order=Date ASC) is fetched - one
+# record's Date is all that's needed per type, not the full dataset.
+# The overall inception date is the earliest across every type checked.
+# --------------------------------------------------------------------
+@app.get("/api/inception-date")
+async def api_inception_date(tenant_id: str):
+    access_token = await get_valid_access_token(tenant_id)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Xero-tenant-id": tenant_id,
+        "Accept": "application/json",
+    }
+    # Every endpoint that has its own "Date" field and can realistically
+    # be the oldest record in an org - covers the vast majority of cases
+    # without fetching every transaction type that exists.
+    endpoints = [
+        "Invoices", "CreditNotes", "BankTransactions", "ManualJournals",
+        "Overpayments", "Prepayments",
+    ]
+    earliest = None
+    earliest_source = None
+    async with httpx.AsyncClient(timeout=30) as client:
+        for ep in endpoints:
+            try:
+                resp = await xero_get(
+                    client, f"{API_BASE}/{ep}", headers,
+                    params={"page": 1, "order": "Date ASC"},
+                )
+                data = resp.json().get(ep, [])
+                if data:
+                    d = parse_xero_date(data[0].get("Date"))
+                    if d and (earliest is None or d < earliest):
+                        earliest = d
+                        earliest_source = ep
+            except Exception as e:
+                print(f"[INCEPTION] {ep} lookup failed (skipping): {e}")
+                continue
+
+    if earliest is None:
+        # No transactions of any checked type found - fall back to a
+        # safe, obviously-not-real placeholder rather than failing the
+        # request outright.
+        earliest = date(2000, 1, 1)
+        earliest_source = None
+
+    print(f"[INCEPTION] tenant_id={tenant_id} inception_date={earliest} (source={earliest_source})")
+    return JSONResponse({"inception_date": earliest.isoformat(), "source": earliest_source})
+
+
 # --------------------------------------------------------------------
 # Main summary endpoint - called only when "Generate Summary" is clicked
 # --------------------------------------------------------------------
 
-@app.get("/api/summary")
-async def api_summary(
+async def generate_summary_data(
     tenant_id: str,
-    from_date: str = Query(None),
-    to_date: str = Query(None),
-    range_preset: str = Query(None),  # "1ytd" | "2ytd" | "3ytd" | None (custom)
-):
+    from_date: str = None,
+    to_date: str = None,
+    range_preset: str = None,  # "1ytd" | "2ytd" | "3ytd" | None (custom)
+    skip_attachments: bool = False,  # True = skip the slow per-record attachment lookups entirely (Xero has no bulk-attachments endpoint, so this is the only real speed lever for large orgs)
+    job_id: str = None,  # when set, every print() below also updates SUMMARY_JOBS[job_id]["progress"] for polling clients - see the shadowed print() just below
+) -> dict:
+    # Shadows the builtin print() for the rest of THIS function and every
+    # nested async def inside it (Python closures resolve free variables
+    # by lexical scope, not call order, so this applies retroactively to
+    # every "print(...)" call already written below without touching any
+    # of them individually - the whole summary generation already logs
+    # its progress via print(), so this is what turns that into
+    # pollable job progress for free instead of a parallel refactor).
+    import builtins as _builtins
+
+    def print(*args, **kwargs):
+        _builtins.print(*args, **kwargs)
+        if job_id and job_id in SUMMARY_JOBS:
+            SUMMARY_JOBS[job_id]["progress"] = " ".join(str(a) for a in args)
+
     access_token = await get_valid_access_token(tenant_id)
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -567,6 +669,74 @@ async def api_summary(
         fy_end_month = org.get("FinancialYearEndMonth")
 
         today = date.today()
+
+        # Attachment candidates are collected (endpoint, record_id) across
+        # EVERY document type as they're fetched below - Invoices/Bills,
+        # CreditNotes, BankTransactions, ManualJournals, PurchaseOrders,
+        # Quotes, Overpayments and Prepayments (the full set of Xero
+        # endpoints that support HasAttachments/the /Attachments
+        # sub-resource) - and only actually hit ONCE, all together, in a
+        # single high-concurrency batch at the very end (see
+        # fetch_all_attachment_counts below the last document fetch).
+        # Previously each type's attachments were fetched separately right
+        # after that type's own document fetch, at a low concurrency (4) -
+        # serialising the whole run behind N sequential low-concurrency
+        # batches, which is what made attachment-fetching slow.
+        all_attachment_candidates = []  # list of (endpoint, record_id)
+
+        def add_attachment_candidates(endpoint: str, ids: list):
+            all_attachment_candidates.extend((endpoint, i) for i in ids)
+
+        # Multi-currency TRANSACTION count (distinct from multi_currency_accounts,
+        # which counts bank/credit-card ACCOUNTS set up in a foreign currency).
+        # A transaction counts here when its own CurrencyCode differs from the
+        # org's BaseCurrency, tallied across every counted (non-VOIDED/DELETED)
+        # Invoice, Bill, Credit Note, and Bank Transaction as they're fetched -
+        # no extra API calls needed.
+        multi_currency_txn_count = 0
+
+        def note_currency(doc: dict):
+            nonlocal multi_currency_txn_count
+            cur = doc.get("CurrencyCode")
+            if cur and cur != base_currency:
+                multi_currency_txn_count += 1
+
+        async def fetch_all_attachment_counts() -> int:
+            if not all_attachment_candidates:
+                return 0
+            # Xero's own API guidance caps recommended concurrent
+            # connections at ~5-10 - going much higher (this used to be 20)
+            # makes every concurrent request hit the per-minute rate limit
+            # at once, they all get the same Retry-After and all retry
+            # together, hit the limit again, and so on - a thundering herd
+            # that burns through xero_get's 5 retries and then silently
+            # returns 0 for records that DO have attachments, undercounting
+            # the true total. 8 concurrent + jittered retries below stays
+            # inside that safe range while still being noticeably faster
+            # than the very conservative 5 this started at.
+            sem = asyncio.Semaphore(8)
+            failed = []
+
+            async def fetch_one(endpoint, record_id):
+                async with sem:
+                    try:
+                        att_resp = await xero_get(
+                            client, f"{API_BASE}/{endpoint}/{record_id}/Attachments", headers,
+                        )
+                        return len(att_resp.json().get("Attachments", []))
+                    except Exception as e:
+                        failed.append((endpoint, record_id, str(e)))
+                        return 0
+
+            print(f"[SUMMARY] Fetching attachment counts for {len(all_attachment_candidates)} records across all document types...")
+            results = await asyncio.gather(*[fetch_one(ep, i) for ep, i in all_attachment_candidates])
+            if failed:
+                print(
+                    f"[SUMMARY] WARNING: {len(failed)} of {len(all_attachment_candidates)} attachment "
+                    f"lookups failed (counted as 0 - total attachment count is an UNDERCOUNT). "
+                    f"First few: {failed[:5]}"
+                )
+            return sum(results)
 
         # --- Resolve date range ---
         if range_preset in ("1ytd", "2ytd", "3ytd") and fy_end_day and fy_end_month:
@@ -649,17 +819,103 @@ async def api_summary(
         items = items_resp.json().get("Items", [])
         tracked_items = [i for i in items if i.get("IsTrackedAsInventory")]
 
-        # --- Payroll check ---
+        # --- Payroll: Employees count + Payroll count (flattened Payslips
+        # across every PayRun in the selected date range).
+        #
+        # Two Payroll API versions, on purpose (same finding as
+        # fetch_payroll_only.py): payroll.xro/2.0 (camelCase) for
+        # /Employees, but payroll.xro/1.0 (PascalCase, legacy) for
+        # /PayRuns - the 2.0 PayRuns list 500s on its last page for some
+        # orgs (confirmed genuine Xero-side bug), and 2.0's per-PayRun
+        # detail endpoint 405s ("Method not allowed for the current
+        # customer jurisdiction"). 1.0 has neither problem, and 1.0's
+        # per-PayRun detail returns a "Payslips" array - flattening that
+        # across every PayRun in range gives the "Payroll" count.
+        PAYROLL_BASE_V1 = "https://api.xero.com/payroll.xro/1.0"
+        payroll_headers = {"Authorization": f"Bearer {access_token}", "Xero-tenant-id": tenant_id, "Accept": "application/json"}
         print("[SUMMARY] Checking Payroll...")
         payroll_enabled = False
+        employee_count = 0
+        payroll_count = 0
         try:
-            pr_resp = await client.get(
-                "https://api.xero.com/payroll.xro/2.0/Employees",
-                headers={"Authorization": f"Bearer {access_token}", "Xero-tenant-id": tenant_id},
-            )
-            payroll_enabled = pr_resp.status_code == 200
+            # Xero's Payroll API returns 200 OK on /Employees even for orgs
+            # that have never touched Payroll (itemCount=0, empty list) - a
+            # 200 status alone does NOT mean payroll is actually in use.
+            # "enabled" is decided below from the real employee count.
+            pr_resp = await client.get(f"{PAYROLL_BASE_V1.replace('1.0', '2.0')}/Employees", headers=payroll_headers, params={"page": 1})
+            payroll_api_reachable = pr_resp.status_code == 200
         except Exception:
-            payroll_enabled = False
+            payroll_api_reachable = False
+
+        if payroll_api_reachable:
+            try:
+                # Employees - paginated, v2.0.
+                page = 1
+                page_count = 1
+                while page <= page_count:
+                    resp = await xero_get(client, "https://api.xero.com/payroll.xro/2.0/Employees", payroll_headers, params={"page": page})
+                    body = resp.json()
+                    page_count = (body.get("pagination") or {}).get("pageCount", page_count)
+                    employee_count += len(body.get("employees", []))
+                    page += 1
+                print(f"[SUMMARY] Payroll Employees count = {employee_count}")
+
+                # "Enabled" = actually has employees set up, not just a 200
+                # from an API that returns 200 either way.
+                payroll_enabled = employee_count > 0
+
+                # PayRuns - paginated, v1.0 (see comment above for why).
+                # Skipped entirely when there are no employees - an org with
+                # no employees has never run payroll, so this would just be
+                # empty pages burning API calls for nothing.
+                all_payruns = []
+                if payroll_enabled:
+                    page = 1
+                    while True:
+                        resp = await xero_get(client, f"{PAYROLL_BASE_V1}/PayRuns", payroll_headers, params={"page": page})
+                        data = resp.json().get("PayRuns", [])
+                        if not data:
+                            break
+                        all_payruns.extend(data)
+                        page += 1
+
+                def parse_payroll_date(d):
+                    if not d:
+                        return None
+                    if d.startswith("/Date("):
+                        millis = int(d.split("(")[1].split("+")[0].split("-")[0].rstrip(")/"))
+                        return datetime.utcfromtimestamp(millis / 1000).date()
+                    return parse_xero_date(d)
+
+                payruns_in_range = [
+                    pr for pr in all_payruns
+                    if (d := parse_payroll_date(pr.get("PaymentDate"))) and start <= d <= end
+                ]
+                print(f"[SUMMARY] PayRuns in range = {len(payruns_in_range)} (of {len(all_payruns)} total)")
+
+                # Per-PayRun detail (v1.0) - flatten "Payslips" across every
+                # PayRun in range to get the "Payroll" count.
+                sem = asyncio.Semaphore(5)
+
+                async def fetch_payrun_payslip_count(pr):
+                    async with sem:
+                        try:
+                            resp = await xero_get(
+                                client, f"{PAYROLL_BASE_V1}/PayRuns/{pr.get('PayRunID')}", payroll_headers,
+                            )
+                        except Exception:
+                            return 0
+                        detail_list = resp.json().get("PayRuns", [])
+                        if not detail_list:
+                            return 0
+                        return len(detail_list[0].get("Payslips", []) or [])
+
+                if payruns_in_range:
+                    payslip_counts = await asyncio.gather(*[fetch_payrun_payslip_count(pr) for pr in payruns_in_range])
+                    payroll_count = sum(payslip_counts)
+                print(f"[SUMMARY] Payroll count (flattened Payslips across PayRuns in range) = {payroll_count} (added to Total Lines)")
+            except Exception as e:
+                print(f"[SUMMARY] Payroll count fetch failed (payroll enabled but detail unavailable): {e}")
 
         # --- Invoices: SINGLE PASS for both Invoice (ACCREC) and Bill (ACCPAY) ---
         # Previously this endpoint was fetched 3 separate times (once for
@@ -725,6 +981,7 @@ async def api_summary(
                             invoice_line_items_total += len(kept_li)
                             invoice_taxed_line_items_total += count_taxed_line_items(kept_li)
                             invoice_doc_buffer_total += document_line_buffer(kept_li)
+                            note_currency(inv)
                         else:
                             excluded_invoices.append((inv.get("InvoiceNumber") or inv.get("InvoiceID"), st))
                     elif inv_type == "ACCPAY":
@@ -736,6 +993,7 @@ async def api_summary(
                             bill_line_items_total += len(kept_li)
                             bill_taxed_line_items_total += count_taxed_line_items(kept_li)
                             bill_doc_buffer_total += document_line_buffer(kept_li)
+                            note_currency(inv)
                         else:
                             excluded_bills.append((inv.get("InvoiceNumber") or inv.get("InvoiceID"), st))
 
@@ -750,7 +1008,7 @@ async def api_summary(
                         attachment_candidates.append(inv["InvoiceID"])
 
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
 
             print(f"[SUMMARY] Invoice (ACCREC) count = {invoice_total}  (by status: {invoice_status_breakdown})")
             print(f"[SUMMARY] Bill (ACCPAY) count = {bill_total}  (by status: {bill_status_breakdown})")
@@ -777,29 +1035,10 @@ async def api_summary(
             # 5 line items total, all taxed -> 5 + (5 bills x 2) = 15.
             print(f"[SUMMARY] Bill TOTAL (LineItems + tax/payable buffer) = {bill_line_items_total} + {bill_doc_buffer_total} = {bill_line_items_total + bill_doc_buffer_total}")
             print(f"[SUMMARY] Invoices/Bills with attachments to check = {len(attachment_candidates)}")
+            add_attachment_candidates("Invoices", attachment_candidates)
 
-            # Only hit the per-record attachment endpoint for records that
-            # actually flagged HasAttachments - never for the full dataset.
-            attachment_total = 0
-            if attachment_candidates:
-                sem = asyncio.Semaphore(4)
-
-                async def fetch_one(invoice_id):
-                    async with sem:
-                        try:
-                            att_resp = await xero_get(
-                                client, f"{API_BASE}/Invoices/{invoice_id}/Attachments", headers,
-                            )
-                            return len(att_resp.json().get("Attachments", []))
-                        except Exception:
-                            return 0
-
-                results = await asyncio.gather(*[fetch_one(i) for i in attachment_candidates])
-                attachment_total = sum(results)
-
-            print(f"[SUMMARY] Invoice/Bill attachment count = {attachment_total}")
             return (
-                invoice_total, bill_total, attachment_total,
+                invoice_total, bill_total,
                 invoice_line_items_total, bill_line_items_total,
                 invoice_taxed_line_items_total, bill_taxed_line_items_total,
                 invoice_doc_buffer_total, bill_doc_buffer_total,
@@ -840,6 +1079,7 @@ async def api_summary(
             # without a second fetch (the /Payments endpoint's own nested
             # Invoice.LineItems always comes back empty).
             credit_note_tax_lookup = {}
+            credit_note_attachment_candidates = []
             page = 1
             while True:
                 await refresh_headers()
@@ -860,6 +1100,8 @@ async def api_summary(
                     kept_li, li_missing, li_zero = valid_line_items(n.get("LineItems"))
                     if n.get("CreditNoteID") and note_type in ("ACCRECCREDIT", "ACCPAYCREDIT") and st not in ("VOIDED", "DELETED"):
                         credit_note_tax_lookup[n["CreditNoteID"]] = count_taxed_line_items(kept_li) > 0
+                    if n.get("HasAttachments") and n.get("CreditNoteID"):
+                        credit_note_attachment_candidates.append(n["CreditNoteID"])
                     if note_type == "ACCRECCREDIT":
                         memo_status_breakdown[st] = memo_status_breakdown.get(st, 0) + 1
                         if st not in ("VOIDED", "DELETED"):
@@ -870,6 +1112,7 @@ async def api_summary(
                             memo_taxed_line_items_total += count_taxed_line_items(kept_li)
                             memo_doc_buffer_total += document_line_buffer(kept_li)
                             memo_allocation_count += len(n.get("Allocations", []) or [])
+                            note_currency(n)
                         else:
                             excluded_memos.append((n.get("CreditNoteNumber") or n.get("CreditNoteID"), st))
                     elif note_type == "ACCPAYCREDIT":
@@ -882,11 +1125,12 @@ async def api_summary(
                             credit_taxed_line_items_total += count_taxed_line_items(kept_li)
                             credit_doc_buffer_total += document_line_buffer(kept_li)
                             credit_allocation_count += len(n.get("Allocations", []) or [])
+                            note_currency(n)
                         else:
                             excluded_credits.append((n.get("CreditNoteNumber") or n.get("CreditNoteID"), st))
 
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
 
             print(f"[SUMMARY] Credit Memo (ACCRECCREDIT) count = {memo_total}  (by status: {memo_status_breakdown})")
             print(f"[SUMMARY] Bill Credit (ACCPAYCREDIT) count = {credit_total}  (by status: {credit_status_breakdown})")
@@ -898,6 +1142,8 @@ async def api_summary(
             print(f"[SUMMARY] Bill Credit LineItems ignored = {credit_missing_amount_count + credit_zero_amount_count}  (no LineAmount field={credit_missing_amount_count}, LineAmount=0={credit_zero_amount_count})")
             print(f"[SUMMARY] Receivable Credit Note Allocation count = {memo_allocation_count}")
             print(f"[SUMMARY] Payable Credit Note Allocation count = {credit_allocation_count}")
+            print(f"[SUMMARY] CreditNotes with attachments to check = {len(credit_note_attachment_candidates)}")
+            add_attachment_candidates("CreditNotes", credit_note_attachment_candidates)
             return (
                 memo_total, credit_total, memo_line_items_total, credit_line_items_total,
                 memo_taxed_line_items_total, credit_taxed_line_items_total,
@@ -937,7 +1183,7 @@ async def api_summary(
                         continue
                     all_txns.append(txn)
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             log_excluded("BankTransactions", excluded_txns)
             print(f"[SUMMARY] BankTransactions fetched total = {len(all_txns)}")
             return all_txns
@@ -973,6 +1219,7 @@ async def api_summary(
                     line_items_total += len(kept_li)
                     taxed_line_items_total += count_taxed_line_items(kept_li)
                     doc_buffer_total += document_line_buffer(kept_li)
+                    note_currency(txn)
                     amount = txn.get("Total") or 0
                     if txn_type.startswith("SPEND"):
                         spend_total += amount
@@ -1013,6 +1260,7 @@ async def api_summary(
                     line_items_total += len(kept_li)
                     taxed_line_items_total += count_taxed_line_items(kept_li)
                     doc_buffer_total += document_line_buffer(kept_li)
+                    note_currency(txn)
             print(f"[SUMMARY] Credit card transactions = {total}, LineItems total = {line_items_total} (taxed={taxed_line_items_total}, doc_buffer={doc_buffer_total})")
             print(f"[SUMMARY] Credit card LineItems ignored = {missing_amount_count + zero_amount_count}  (no LineAmount field={missing_amount_count}, LineAmount=0={zero_amount_count})")
             return total, line_items_total, taxed_line_items_total, doc_buffer_total
@@ -1036,6 +1284,7 @@ async def api_summary(
             parse_failures = 0
             missing_amount_count = 0
             zero_amount_count = 0
+            attachment_candidates = []
             page = 1
             while True:
                 await refresh_headers()
@@ -1070,18 +1319,22 @@ async def api_summary(
                             # journal implies but doesn't carry as its own line).
                             if journal_taxed_count > 0:
                                 doc_buffer_total += 1
+                            if mj.get("HasAttachments") and mj.get("ManualJournalID"):
+                                attachment_candidates.append(mj["ManualJournalID"])
                     except Exception as e:
                         parse_failures += 1
                         if parse_failures <= 5:
                             print(f"[SUMMARY] Could not parse ManualJournal date {d!r}: {e}")
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             print(
                 f"[SUMMARY] ManualJournals fetched={fetched}, "
                 f"in-range={total}, parse_failures={parse_failures}"
             )
             print(f"[SUMMARY] ManualJournal JournalLines total = {line_items_total} (taxed={taxed_line_items_total}, doc_buffer={doc_buffer_total})")
             print(f"[SUMMARY] ManualJournal JournalLines ignored = {missing_amount_count + zero_amount_count}  (no LineAmount field={missing_amount_count}, LineAmount=0={zero_amount_count})")
+            print(f"[SUMMARY] ManualJournals with attachments to check = {len(attachment_candidates)}")
+            add_attachment_candidates("ManualJournals", attachment_candidates)
             return total, line_items_total, taxed_line_items_total, doc_buffer_total
 
         # --- General Ledger (Journals) - the actual source of "Total Lines".
@@ -1112,6 +1365,7 @@ async def api_summary(
                     break
                 print(f"[SUMMARY] Journals - offset {offset} returned {len(data)} records")
 
+                past_end = False
                 for j in data:
                     d = j.get("JournalDate")
                     try:
@@ -1119,10 +1373,20 @@ async def api_summary(
                         if j_date and start <= j_date <= end:
                             total_journals += 1
                             line_items_total += len(j.get("JournalLines", []) or [])
+                        elif j_date and j_date > end:
+                            # Journals come back ordered oldest-first by
+                            # JournalNumber, so once one is past the range
+                            # end, every journal after it is too - no point
+                            # paging through the rest of the ledger.
+                            past_end = True
                     except Exception as e:
                         parse_failures += 1
                         if parse_failures <= 5:
                             print(f"[SUMMARY] Could not parse Journal date {d!r}: {e}")
+
+                if past_end:
+                    print(f"[SUMMARY] Journals - reached a date past the range end ({end}), stopping early.")
+                    break
 
                 last_journal_number = data[-1].get("JournalNumber")
                 if last_journal_number is None:
@@ -1132,7 +1396,7 @@ async def api_summary(
                     )
                     break
                 offset = last_journal_number + 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
 
             print(
                 f"[SUMMARY] Journals in-range={total_journals}, "
@@ -1228,7 +1492,7 @@ async def api_summary(
                     elif pt == "APCREDITPAYMENT" and credit_note_tax_lookup.get(invoice_id):
                         payable_credit_note_refund_taxed_count += 1
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             print(f"[SUMMARY] Payments count = {total}  (by type: {type_breakdown})")
             log_excluded("Payments", excluded_payments, id_field="PaymentID")
             print(
@@ -1295,6 +1559,7 @@ async def api_summary(
             excluded_overpayments = []
             missing_amount_count = 0
             zero_amount_count = 0
+            overpayment_attachment_candidates = []
             page = 1
             while True:
                 await refresh_headers()
@@ -1324,11 +1589,15 @@ async def api_summary(
                     line_items_total += len(kept_li)
                     taxed_line_items_total += count_taxed_line_items(kept_li)
                     doc_buffer_total += document_line_buffer(kept_li)
+                    if o.get("HasAttachments") and o.get("OverpaymentID"):
+                        overpayment_attachment_candidates.append(o["OverpaymentID"])
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             print(f"[SUMMARY] Overpayments count = {total}  (by type: {type_breakdown})")
             print(f"[SUMMARY] Overpayments LineItems total = {line_items_total} (taxed={taxed_line_items_total}, doc_buffer={doc_buffer_total})")
             print(f"[SUMMARY] Overpayments LineItems ignored = {missing_amount_count + zero_amount_count}  (no LineAmount field={missing_amount_count}, LineAmount=0={zero_amount_count})")
+            print(f"[SUMMARY] Overpayments with attachments to check = {len(overpayment_attachment_candidates)}")
+            add_attachment_candidates("Overpayments", overpayment_attachment_candidates)
             log_excluded("Overpayments", excluded_overpayments, id_field="OverpaymentID")
             return total, line_items_total, taxed_line_items_total, doc_buffer_total
 
@@ -1345,6 +1614,7 @@ async def api_summary(
             excluded_prepayments = []
             missing_amount_count = 0
             zero_amount_count = 0
+            prepayment_attachment_candidates = []
             page = 1
             while True:
                 await refresh_headers()
@@ -1374,11 +1644,15 @@ async def api_summary(
                     line_items_total += len(kept_li)
                     taxed_line_items_total += count_taxed_line_items(kept_li)
                     doc_buffer_total += document_line_buffer(kept_li)
+                    if pp.get("HasAttachments") and pp.get("PrepaymentID"):
+                        prepayment_attachment_candidates.append(pp["PrepaymentID"])
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             print(f"[SUMMARY] Prepayments count = {total}  (by type: {type_breakdown})")
             print(f"[SUMMARY] Prepayments LineItems total = {line_items_total} (taxed={taxed_line_items_total}, doc_buffer={doc_buffer_total})")
             print(f"[SUMMARY] Prepayments LineItems ignored = {missing_amount_count + zero_amount_count}  (no LineAmount field={missing_amount_count}, LineAmount=0={zero_amount_count})")
+            print(f"[SUMMARY] Prepayments with attachments to check = {len(prepayment_attachment_candidates)}")
+            add_attachment_candidates("Prepayments", prepayment_attachment_candidates)
             log_excluded("Prepayments", excluded_prepayments, id_field="PrepaymentID")
             return total, line_items_total, taxed_line_items_total, doc_buffer_total
 
@@ -1388,6 +1662,7 @@ async def api_summary(
             total = 0
             status_breakdown = {}
             excluded_pos = []
+            po_attachment_candidates = []
             page = 1
             while True:
                 await refresh_headers()
@@ -1406,11 +1681,15 @@ async def api_summary(
                     status_breakdown[st] = status_breakdown.get(st, 0) + 1
                     if st != "DELETED":
                         total += 1
+                        if po.get("HasAttachments") and po.get("PurchaseOrderID"):
+                            po_attachment_candidates.append(po["PurchaseOrderID"])
                     else:
                         excluded_pos.append((po.get("PurchaseOrderNumber") or po.get("PurchaseOrderID"), st))
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             print(f"[SUMMARY] Purchase Order count = {total}  (by status: {status_breakdown})")
+            print(f"[SUMMARY] Purchase Orders with attachments to check = {len(po_attachment_candidates)}")
+            add_attachment_candidates("PurchaseOrders", po_attachment_candidates)
             log_excluded("Purchase Order", excluded_pos)
             return total
 
@@ -1421,6 +1700,7 @@ async def api_summary(
             total = 0
             status_breakdown = {}
             excluded_quotes = []
+            quote_attachment_candidates = []
             page = 1
             while True:
                 await refresh_headers()
@@ -1439,11 +1719,15 @@ async def api_summary(
                     status_breakdown[st] = status_breakdown.get(st, 0) + 1
                     if st != "DELETED":
                         total += 1
+                        if q.get("HasAttachments") and q.get("QuoteID"):
+                            quote_attachment_candidates.append(q["QuoteID"])
                     else:
                         excluded_quotes.append((q.get("QuoteNumber") or q.get("QuoteID"), st))
                 page += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.05)
             print(f"[SUMMARY] Quote (Sales Order) count = {total}  (by status: {status_breakdown})")
+            print(f"[SUMMARY] Quotes with attachments to check = {len(quote_attachment_candidates)}")
+            add_attachment_candidates("Quotes", quote_attachment_candidates)
             log_excluded("Quote (Sales Order)", excluded_quotes)
             return total
 
@@ -1477,7 +1761,7 @@ async def api_summary(
             return total
 
         (
-            invoice_count, bill_count, attachment_count,
+            invoice_count, bill_count,
             invoice_line_items_total, bill_line_items_total,
             invoice_taxed_line_items_total, bill_taxed_line_items_total,
             invoice_doc_buffer_total, bill_doc_buffer_total,
@@ -1497,7 +1781,15 @@ async def api_summary(
         bank_txn_count, bank_line_items_total, bank_taxed_line_items_total, bank_doc_buffer_total = count_bank_transactions(all_bank_txns)
         credit_card_txn_count, credit_card_line_items_total, credit_card_taxed_line_items_total, credit_card_doc_buffer_total = count_credit_card_transactions(all_bank_txns)
 
+        bank_txn_attachment_candidates = [
+            t["BankTransactionID"] for t in all_bank_txns
+            if t.get("HasAttachments") and t.get("BankTransactionID")
+        ]
+        print(f"[SUMMARY] BankTransactions with attachments to check = {len(bank_txn_attachment_candidates)}")
+        add_attachment_candidates("BankTransactions", bank_txn_attachment_candidates)
+
         manual_journal_count, manual_journal_line_items_total, manual_journal_taxed_line_items_total, manual_journal_doc_buffer_total = await count_manual_journals()
+
         purchase_order_count = await count_purchase_orders()
         sales_order_count = await count_quotes()
         recurring_invoice_count = await count_repeating_invoices()
@@ -1517,6 +1809,21 @@ async def api_summary(
         ) = await count_payments(invoice_tax_lookup, credit_note_tax_lookup)
         overpayment_count, overpayment_line_items_total, overpayment_taxed_line_items_total, overpayment_doc_buffer_total = await fetch_overpayments()
         prepayment_count, prepayment_line_items_total, prepayment_taxed_line_items_total, prepayment_doc_buffer_total = await fetch_prepayments()
+
+        # Every document type has now been fetched and had its
+        # HasAttachments candidates added to all_attachment_candidates
+        # (Invoices/Bills, CreditNotes, BankTransactions, ManualJournals,
+        # PurchaseOrders, Quotes, Overpayments, Prepayments) - fetch every
+        # candidate's real attachment count in ONE combined high-
+        # concurrency batch now, instead of one slow low-concurrency batch
+        # per document type.
+        attachments_skipped = skip_attachments
+        if skip_attachments:
+            print(f"[SUMMARY] Skipping attachment count fetch (skip_attachments=true) - {len(all_attachment_candidates)} candidates NOT checked.")
+            attachment_count = 0
+        else:
+            attachment_count = await fetch_all_attachment_counts()
+            print(f"[SUMMARY] Total attachment count (all document types combined) = {attachment_count}")
 
         # combined_bank_records: RECORD count across bank-related endpoints -
         # used for the "Bank" transaction-count display only, never for
@@ -1679,6 +1986,7 @@ async def api_summary(
             + payable_credit_note_allocation_line_total
             + receivable_credit_note_allocation_line_total
             + receivable_credit_note_refund_buffer + payable_credit_note_refund_buffer
+            + payroll_count
             + 0  # sales_receipts, always 0
         )
 
@@ -1839,6 +2147,7 @@ async def api_summary(
              receivable_credit_note_refund_buffer, receivable_credit_note_refund_line_total),
             ("Payable Credit Note Refund", payable_credit_note_refund_count, 0,
              payable_credit_note_refund_buffer, payable_credit_note_refund_line_total),
+            ("Payroll", employee_count, payroll_count, 0, payroll_count),
         ]
 
         col = f"{'Category':<20}{'Records':>10}{'LineItems':>12}{'Buffer':>10}{'Total':>10}"
@@ -1854,9 +2163,10 @@ async def api_summary(
         print(f"{'TOTAL LINES (used)':<20}{'':>10}{'':>12}{'':>10}{general_ledger_line_count:>10}")
         print(rule + "\n")
 
+    print(f"[SUMMARY] Multi-currency transactions (Invoices/Bills/CreditNotes/BankTxns with CurrencyCode != {base_currency}) = {multi_currency_txn_count}")
     print("[SUMMARY] Done. Sending response.\n")
 
-    return JSONResponse({
+    return {
         "company_name": org.get("Name"),
         "base_currency": base_currency,
         "financial_year_end": f"{fy_end_day}/{fy_end_month}" if fy_end_day else "N/A",
@@ -1868,11 +2178,24 @@ async def api_summary(
             "bank_accounts": bank_count,
             "credit_cards": cc_count,
             "multi_currency_accounts": multi_currency_accounts,
+            "multi_currency_transactions": multi_currency_txn_count,
         },
 
         "class_job_location": {
             "enabled": len(tracking_categories) > 0,
             "categories": [c.get("Name") for c in tracking_categories],
+            # Xero's TrackingCategory has no "type" field distinguishing
+            # Class/Job/Location - it's just a name the org picked. Best-
+            # effort keyword match on the category name, so "Yes" here can
+            # be wrong if the org used an unrelated name - the raw
+            # "categories" list above is the source of truth to double-check.
+            "class": any("class" in (c.get("Name") or "").lower() for c in tracking_categories),
+            "job": any("job" in (c.get("Name") or "").lower() for c in tracking_categories),
+            "location": any(
+                kw in (c.get("Name") or "").lower()
+                for c in tracking_categories
+                for kw in ("location", "region", "branch", "site")
+            ),
         },
 
         "tracked_inventory": {
@@ -1882,12 +2205,19 @@ async def api_summary(
 
         "payroll": {
             "enabled": payroll_enabled,
+            "employee_count": employee_count,
+            # "Payroll" count = flattened Payslips across every PayRun in
+            # the selected date range (see the fetch above for why).
+            "payroll_count": payroll_count,
         },
 
         "attachments": {
-            "count": attachment_count,  # Only checked on Invoices/Bills now,
-                                         # not BankTransactions/CreditNotes/
-                                         # ManualJournals - keeps this cheap.
+            # Combined across Invoices/Bills, CreditNotes, BankTransactions
+            # and ManualJournals - only hits the per-record /Attachments
+            # endpoint for records that actually flagged HasAttachments,
+            # never for the full dataset.
+            "count": attachment_count,
+            "skipped": attachments_skipped,
         },
 
         "transactions_in_period": {
@@ -1937,7 +2267,87 @@ async def api_summary(
             "sales_orders": sales_order_count,
             "recurring_invoices": recurring_invoice_count,
         },
+    }
+
+
+# --------------------------------------------------------------------
+# Job runner - /api/summary now starts a background job instead of
+# blocking on the whole (potentially many-minute) fetch, so the request
+# returns almost instantly and the client polls for progress/result
+# instead of holding a connection open long enough to hit a reverse-
+# proxy timeout (502) or a browser request timeout.
+# --------------------------------------------------------------------
+SUMMARY_JOBS: dict = {}  # job_id -> {"status", "progress", "result", "error", "created_at"}
+_SUMMARY_JOB_TTL_SECONDS = 3600  # stale jobs older than this get swept on each new job start
+
+
+def _cleanup_old_summary_jobs():
+    now = time.time()
+    stale = [jid for jid, j in SUMMARY_JOBS.items() if now - j.get("created_at", now) > _SUMMARY_JOB_TTL_SECONDS]
+    for jid in stale:
+        del SUMMARY_JOBS[jid]
+
+
+async def _run_summary_job(job_id: str, tenant_id: str, from_date, to_date, range_preset, skip_attachments):
+    try:
+        data = await generate_summary_data(
+            tenant_id, from_date, to_date, range_preset, skip_attachments, job_id=job_id,
+        )
+        SUMMARY_JOBS[job_id]["status"] = "done"
+        SUMMARY_JOBS[job_id]["result"] = data
+    except Exception as e:
+        print(f"[SUMMARY] Job {job_id} failed: {e}")
+        SUMMARY_JOBS[job_id]["status"] = "error"
+        SUMMARY_JOBS[job_id]["error"] = str(e)
+
+
+@app.get("/api/summary/start")
+async def start_summary_job(
+    tenant_id: str,
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    range_preset: str = Query(None),
+    skip_attachments: bool = Query(False),
+):
+    _cleanup_old_summary_jobs()
+    job_id = uuid.uuid4().hex
+    SUMMARY_JOBS[job_id] = {
+        "status": "running",
+        "progress": "Starting…",
+        "result": None,
+        "error": None,
+        "created_at": time.time(),
+    }
+    asyncio.create_task(_run_summary_job(job_id, tenant_id, from_date, to_date, range_preset, skip_attachments))
+    return JSONResponse({"job_id": job_id})
+
+
+@app.get("/api/summary/status")
+async def summary_job_status(job_id: str):
+    job = SUMMARY_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found (it may have expired - start a new one via /api/summary/start)")
+    return JSONResponse({
+        "status": job["status"],
+        "progress": job["progress"],
+        "result": job["result"],
+        "error": job["error"],
     })
+
+
+# Kept for backwards compatibility (direct callers, scripts, tests that
+# still hit /api/summary synchronously) - the dashboard itself now uses
+# /api/summary/start + /api/summary/status instead.
+@app.get("/api/summary")
+async def api_summary(
+    tenant_id: str,
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    range_preset: str = Query(None),
+    skip_attachments: bool = Query(False),
+):
+    data = await generate_summary_data(tenant_id, from_date, to_date, range_preset, skip_attachments)
+    return JSONResponse(data)
 
 
 # --------------------------------------------------------------------
@@ -1974,11 +2384,17 @@ async def export_excel(payload: dict = Body(...)):
         ("Bank Accounts", data.get("chart_of_accounts", {}).get("bank_accounts")),
         ("Credit Cards", data.get("chart_of_accounts", {}).get("credit_cards")),
         ("Multi-Currency Accounts", len(data.get("chart_of_accounts", {}).get("multi_currency_accounts", []))),
+        ("Multi-Currency Transactions", data.get("chart_of_accounts", {}).get("multi_currency_transactions")),
         ("", ""),
         ("Features", ""),
         ("Class / Job / Location", "Yes" if data.get("class_job_location", {}).get("enabled") else "No"),
+        ("  Class", "Yes" if data.get("class_job_location", {}).get("class") else "No"),
+        ("  Job", "Yes" if data.get("class_job_location", {}).get("job") else "No"),
+        ("  Location", "Yes" if data.get("class_job_location", {}).get("location") else "No"),
         ("Tracked Inventory", "Yes" if data.get("tracked_inventory", {}).get("enabled") else "No"),
         ("Payroll", "Yes" if data.get("payroll", {}).get("enabled") else "No"),
+        ("Payroll Count", data.get("payroll", {}).get("payroll_count")),
+        ("Employees", data.get("payroll", {}).get("employee_count")),
         ("Attachments", data.get("attachments", {}).get("count", 0)),
         ("", ""),
         ("Number of Transactions in Conversion Period", ""),
