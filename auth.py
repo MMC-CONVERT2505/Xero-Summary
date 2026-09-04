@@ -1337,74 +1337,6 @@ async def generate_summary_data(
             add_attachment_candidates("ManualJournals", attachment_candidates)
             return total, line_items_total, taxed_line_items_total, doc_buffer_total
 
-        # --- General Ledger (Journals) - the actual source of "Total Lines".
-        # Every transaction type (Invoice, Bill, BankTransaction,
-        # ManualJournal, Payment, etc.) posts its double-entry ledger effect
-        # here, so this is a completely separate fetch from everything
-        # above - it can't reuse Invoices/BankTransactions/CreditNotes/
-        # ManualJournals data, it's Xero's own ledger-level rollup.
-        # Pagination is offset=JournalNumber based (NOT page-number based
-        # like every other endpoint in this file), and /Journals has no
-        # "where" filter support, so date-range filtering is client-side
-        # per JournalDate - same pattern as count_manual_journals() above.
-        async def count_general_ledger_lines():
-            total_journals = 0
-            line_items_total = 0
-            parse_failures = 0
-            offset = 0
-            while True:
-                await refresh_headers()
-                print(f"[SUMMARY] Journals - offset {offset}...")
-                resp = await xero_get(
-                    client, f"{API_BASE}/Journals", headers,
-                    params={"offset": offset},
-                )
-                data = resp.json().get("Journals", [])
-                if not data:
-                    print(f"[SUMMARY] Journals - offset {offset} empty, stopping.")
-                    break
-                print(f"[SUMMARY] Journals - offset {offset} returned {len(data)} records")
-
-                past_end = False
-                for j in data:
-                    d = j.get("JournalDate")
-                    try:
-                        j_date = parse_xero_date(d)
-                        if j_date and start <= j_date <= end:
-                            total_journals += 1
-                            line_items_total += len(j.get("JournalLines", []) or [])
-                        elif j_date and j_date > end:
-                            # Journals come back ordered oldest-first by
-                            # JournalNumber, so once one is past the range
-                            # end, every journal after it is too - no point
-                            # paging through the rest of the ledger.
-                            past_end = True
-                    except Exception as e:
-                        parse_failures += 1
-                        if parse_failures <= 5:
-                            print(f"[SUMMARY] Could not parse Journal date {d!r}: {e}")
-
-                if past_end:
-                    print(f"[SUMMARY] Journals - reached a date past the range end ({end}), stopping early.")
-                    break
-
-                last_journal_number = data[-1].get("JournalNumber")
-                if last_journal_number is None:
-                    print(
-                        "[SUMMARY] WARNING: Journals page had no JournalNumber on "
-                        "the last record, stopping to avoid an infinite loop."
-                    )
-                    break
-                offset = last_journal_number + 1
-                await asyncio.sleep(0.05)
-
-            print(
-                f"[SUMMARY] Journals in-range={total_journals}, "
-                f"parse_failures={parse_failures}"
-            )
-            print(f"[SUMMARY] General Ledger JournalLines total = {line_items_total}")
-            return line_items_total
-
         # --- BankTransfers - a genuinely separate endpoint from
         # BankTransactions (it references two linked BankTransaction IDs
         # but isn't one itself). Verified against Xero's OpenAPI spec: this
@@ -2036,17 +1968,19 @@ async def generate_summary_data(
         # the LineItems-based fallback) - not tied to any one category.
         TOTAL_LINES_BUFFER = 50
 
-        try:
-            general_ledger_line_count = await count_general_ledger_lines()
-        except Exception as e:
-            print(
-                f"[SUMMARY] Journals fetch failed - this endpoint requires Xero's "
-                f"Advanced tier + security assessment + use-case approval, most "
-                f"apps don't have access. Falling back to LineItems-sum total "
-                f"(+ per-document tax/control-account buffer, see document_line_buffer). Error: {e}"
-            )
-            general_ledger_line_count = line_items_fallback_total_buffered
-
+        # Total Lines is the LineItems-sum + per-document tax/control-account
+        # buffer (line_items_fallback_total_buffered), NOT the raw /Journals
+        # GL rollup. Verified against a client's own Xero-exported report
+        # (~50k) - it matched the buffered document-approximation, not the
+        # real GL JournalLines count (which ran ~84k on the same data,
+        # because Xero's ledger posts more granular double-entry lines per
+        # document - tax-rate splits, tracking-category splits, multi-
+        # currency realised gain/loss, etc - than this buffer approximates).
+        # /Journals is also gated behind Xero's Advanced tier + security
+        # assessment (most apps don't have access) and a full paginated
+        # fetch of it is one of the slower parts of a run, so it's no longer
+        # called at all here.
+        general_ledger_line_count = line_items_fallback_total_buffered
         general_ledger_line_count += TOTAL_LINES_BUFFER
         print(
             f"[SUMMARY] + Total Lines buffer (flat, overall) = "
@@ -2240,23 +2174,18 @@ async def generate_summary_data(
             "payable_credit_notes": bill_credit_count,
             "receivable_credit_note_refunds": receivable_credit_note_refund_count,
             "payable_credit_note_refunds": payable_credit_note_refund_count,
-            # General Ledger (Journals) based when available - Xero's
-            # /Journals endpoint is the true ledger-level rollup (every
-            # transaction type's double-entry effect), which is what the
-            # reference report's "Total Lines" actually measures. Falls
-            # back to a LineItems-sum if this app doesn't have Journals
-            # access (see count_general_ledger_lines() try/except above);
-            # Bank's contribution to that fallback is combined_bank_line_total
-            # (real LineItems for BankTransactions/Overpayments/Prepayments
-            # + a 1-line-per-record proxy for BankTransfers/Payments only,
-            # each transaction counted exactly once), and the fallback
-            # carries a per-DOCUMENT tax/control-account approximation
-            # buffer (see document_line_buffer above - +2 if a document has
-            # at least one taxed line, +1 if it has lines but none taxed;
-            # NOT per line item, since those GL postings happen once per
-            # document regardless of line-item count) since it's standing
-            # in for the true GL line count we can't fetch. Every
-            # per-category count above is unaffected (not buffered).
+            # LineItems-sum based, NOT the raw /Journals GL rollup - see the
+            # note above count_general_ledger_lines()'s old call site for why.
+            # Bank's contribution is combined_bank_line_total (real LineItems
+            # for BankTransactions/Overpayments/Prepayments + a
+            # 1-line-per-record proxy for BankTransfers/Payments only, each
+            # transaction counted exactly once), plus a per-DOCUMENT
+            # tax/control-account approximation buffer (see
+            # document_line_buffer above - +2 if a document has at least one
+            # taxed line, +1 if it has lines but none taxed; NOT per line
+            # item, since those GL postings happen once per document
+            # regardless of line-item count). Every per-category count above
+            # is unaffected (not buffered).
             "total_lines": general_ledger_line_count,
         },
 
