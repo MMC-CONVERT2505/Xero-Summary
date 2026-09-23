@@ -196,6 +196,14 @@ async def xero_get(client: httpx.AsyncClient, url: str, headers: dict, params: d
             # fail, even though the request itself was fine).
             await asyncio.sleep(retry_after + 1 + random.uniform(0, 3))
             continue
+        if resp.status_code in (502, 503, 504):
+            # Transient failures on Xero's own infrastructure (gateway
+            # timeout/unavailable), not something wrong with our request -
+            # Xero sends no Retry-After for these, so back off a short fixed
+            # delay with jitter and try again rather than killing the whole
+            # run over what's usually a momentary blip.
+            await asyncio.sleep(3 + random.uniform(0, 3))
+            continue
         resp.raise_for_status()
         return resp
     resp.raise_for_status()
