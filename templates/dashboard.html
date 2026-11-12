@@ -679,10 +679,16 @@
         document.getElementById("rCreditCards").innerText = data.chart_of_accounts.credit_cards;
 
         const mcAccounts = data.chart_of_accounts.multi_currency_accounts;
-        document.getElementById("rMultiCurrency").innerHTML = mcAccounts.length > 0
-          ? `<span class="badge yes">Yes</span> (${mcAccounts.length})`
+        const mcTxnCount = data.chart_of_accounts.multi_currency_transactions ?? 0;
+        // "Multi-Currency" must be Yes if EITHER a foreign-currency bank/
+        // credit-card account exists OR any transaction was raised in a
+        // non-base currency - an org can have the latter (e.g. a USD
+        // invoice) with no dedicated foreign-currency account at all, since
+        // Xero can settle it straight into a base-currency account.
+        document.getElementById("rMultiCurrency").innerHTML = (mcAccounts.length > 0 || mcTxnCount > 0)
+          ? `<span class="badge yes">Yes</span> (${mcAccounts.length} account${mcAccounts.length === 1 ? "" : "s"}, ${mcTxnCount} txn${mcTxnCount === 1 ? "" : "s"})`
           : `<span class="badge no">No</span>`;
-        document.getElementById("rMultiCurrencyTxns").innerText = data.chart_of_accounts.multi_currency_transactions ?? 0;
+        document.getElementById("rMultiCurrencyTxns").innerText = mcTxnCount;
 
         document.getElementById("rTracking").innerHTML = data.class_job_location.enabled
           ? `<span class="badge yes">Yes</span> (${data.class_job_location.categories.join(", ")})`
